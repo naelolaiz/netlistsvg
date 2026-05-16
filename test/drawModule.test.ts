@@ -84,6 +84,59 @@ test('remove dummy edges outputs', () => {
     expect(junctionPoints.length).toEqual(1);
 });
 
+test('remove prefixed dummy edges', () => {
+    const e1end = {x: 249, y: 162};
+    const e2end = {x: 249, y: 97};
+    const dummyPos = {x: 214, y: 32};
+    const junctPoint = {x: 224, y: 32};
+
+    const testGraph: ElkModel.Graph = {
+        id: 'fake id',
+        children: [],
+        edges:
+            [{
+                id: 'top.e1',
+                source: 'top.$d_0',
+                sourcePort: 'top.$d_0.p',
+                target: 'top.o1',
+                targetPort: 'top.o1.A',
+                sections: [
+                    {
+                        id: 'top.e1_s0',
+                        startPoint: dummyPos,
+                        endPoint: e1end,
+                        bendPoints: [
+                            junctPoint,
+                            {x: 224, y: 162},
+                        ],
+                    },
+                ],
+                junctionPoints: [junctPoint],
+            },
+            {
+                id: 'top.e2',
+                source: 'top.$d_0',
+                sourcePort: 'top.$d_0.p',
+                target: 'top.o2',
+                targetPort: 'top.o2.A',
+                sections: [
+                    {
+                        id: 'top.e2_s0',
+                        startPoint: dummyPos,
+                        endPoint: e2end,
+                    },
+                ],
+            },
+        ],
+    };
+
+    removeDummyEdges(testGraph);
+    const e1 = testGraph.edges.find((edge) => edge.id === 'top.e1') as ElkModel.Edge;
+    const e2 = testGraph.edges.find((edge) => edge.id === 'top.e2') as ElkModel.Edge;
+    expect(e1.sections[0].startPoint).toEqual(junctPoint);
+    expect(e2.sections[0].startPoint).toEqual(junctPoint);
+});
+
 test('remove dummy edges inputs', () => {
     // this test case came from hyperedges.json
     const e5Start = {x: 159, y: 162};

@@ -1,5 +1,5 @@
 import Yosys from './YosysModel';
-import Config from './ConfigModel';
+import Config, { normalizeConfig } from './ConfigModel';
 import Skin from './Skin';
 import Cell from './Cell';
 import _ = require('lodash');
@@ -25,11 +25,11 @@ export class FlatModule {
     public static modNames: string[];
     public static config: Config;
 
-    public static fromNetlist(netlist: Yosys.Netlist, config: Config): FlatModule {
+    public static fromNetlist(netlist: Yosys.Netlist, config?: Config): FlatModule {
         this.layoutProps = Skin.getProperties();
         this.modNames = Object.keys(netlist.modules);
         this.netlist = netlist;
-        this.config = config;
+        this.config = normalizeConfig(config);
         let topName = null;
         if (this.config.top.enable) {
             topName = this.config.top.module;

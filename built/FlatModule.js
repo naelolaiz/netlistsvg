@@ -1,13 +1,17 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.removeDups = exports.addToDefaultDict = exports.arrayToBitstring = exports.FlatModule = void 0;
+exports.FlatModule = void 0;
+exports.arrayToBitstring = arrayToBitstring;
+exports.addToDefaultDict = addToDefaultDict;
+exports.removeDups = removeDups;
+var ConfigModel_1 = require("./ConfigModel");
 var Skin_1 = require("./Skin");
 var Cell_1 = require("./Cell");
 var _ = require("lodash");
 var FlatModule = /** @class */ (function () {
     function FlatModule(mod, name, depth, parent) {
-        var _this = this;
         if (parent === void 0) { parent = null; }
+        var _this = this;
         this.parent = parent;
         this.moduleName = name;
         var ports = _.map(mod.ports, function (port, portName) { return Cell_1.default.fromPort(port, portName, _this.moduleName); });
@@ -66,7 +70,7 @@ var FlatModule = /** @class */ (function () {
         this.layoutProps = Skin_1.default.getProperties();
         this.modNames = Object.keys(netlist.modules);
         this.netlist = netlist;
-        this.config = config;
+        this.config = (0, ConfigModel_1.normalizeConfig)(config);
         var topName = null;
         if (this.config.top.enable) {
             topName = this.config.top.module;
@@ -157,7 +161,6 @@ function arrayToBitstring(bitArray) {
     });
     return ',' + ret + ',';
 }
-exports.arrayToBitstring = arrayToBitstring;
 // returns whether needle is a substring of haystack
 function arrayContains(needle, haystack) {
     return (haystack.indexOf(needle) > -1);
@@ -177,7 +180,6 @@ function addToDefaultDict(dict, key, value) {
         dict[key].push(value);
     }
 }
-exports.addToDefaultDict = addToDefaultDict;
 // string (for labels), that represents an index
 // or range of indices.
 function getIndicesString(bitstring, query, start) {
@@ -250,4 +252,3 @@ function removeDups(inStrs) {
     });
     return _.keys(map);
 }
-exports.removeDups = removeDups;

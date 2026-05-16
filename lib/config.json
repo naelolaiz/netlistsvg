@@ -5,8 +5,7 @@
     "expandModules": {
       "types": [],
       "ids": []
-    },
-    "colour": ["#e9e9e9"]
+    }
   },
   "top": {
     "enable": false,

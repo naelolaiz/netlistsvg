@@ -139,5 +139,5 @@ var Skin;
         return vals;
     }
     Skin.getProperties = getProperties;
-})(Skin = exports.Skin || (exports.Skin = {}));
+})(Skin || (exports.Skin = Skin = {}));
 exports.default = Skin;

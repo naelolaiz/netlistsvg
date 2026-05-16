@@ -68,9 +68,9 @@ export default function drawModule(g: ElkModel.Graph, module: FlatModule) {
             const netName = 'net_' + netId.slice(1, netId.length - 1) +
                 ' width_' + numWires +
                 ' busLabel_' + numWires;
-            if ((e as ElkModel.ExtendedEdge).labels !== undefined &&
-                (e as ElkModel.ExtendedEdge).labels[0] !== undefined &&
-                (e as ElkModel.ExtendedEdge).labels[0].text !== undefined) {
+            if (e.labels !== undefined &&
+                e.labels[0] !== undefined &&
+                e.labels[0].text !== undefined) {
                 const label = [
                         ['rect',
                             {
@@ -200,6 +200,11 @@ function findBendNearDummy(
         net: ElkModel.Edge[],
         dummyIsSource: boolean,
         dummyLoc: ElkModel.WirePoint): ElkModel.WirePoint {
+    const junctions = _.flatMap(net, (edge) => edge.junctionPoints || []);
+    if (junctions.length > 0) {
+        return nearestPoint(junctions, dummyLoc);
+    }
+
     const candidates = net.map( (edge) => {
         const bends = edge.sections[0].bendPoints || [null];
         if (dummyIsSource) {
@@ -208,20 +213,40 @@ function findBendNearDummy(
             return _.last(bends);
         }
     }).filter((p) => p !== null);
-    return _.minBy(candidates, (pt: ElkModel.WirePoint) => {
+    if (candidates.length === 0) {
+        return dummyLoc;
+    }
+    return nearestPoint(candidates, dummyLoc);
+}
+
+function nearestPoint(points: ElkModel.WirePoint[], dummyLoc: ElkModel.WirePoint): ElkModel.WirePoint {
+    return _.minBy(points, (pt: ElkModel.WirePoint) => {
         return Math.abs(dummyLoc.x - pt.x) + Math.abs(dummyLoc.y - pt.y);
     });
 }
 
 export function removeDummyEdges(g: ElkModel.Graph|ElkModel.Cell) {
+    if (!g.edges) {
+        return;
+    }
+
     // go through each edge group for each dummy
     let dummyNum: number = 0;
     // loop until we can't find an edge group or we hit 10,000
     while (dummyNum < 10000) {
-        const dummyId: string = '$d_' + String(dummyNum);
+        const dummyIdSuffix: string = '$d_' + String(dummyNum);
+        let dummyId: string = null;
         // find all edges connected to this dummy
         const edgeGroup = _.filter(g.edges, (e: ElkModel.Edge) => {
-            return e.source === dummyId || e.target === dummyId;
+            if (isDummyId(e.source, dummyIdSuffix)) {
+                dummyId = e.source;
+                return true;
+            }
+            if (isDummyId(e.target, dummyIdSuffix)) {
+                dummyId = e.target;
+                return true;
+            }
+            return false;
         });
         if (edgeGroup.length === 0) {
             break;
@@ -291,4 +316,9 @@ export function removeDummyEdges(g: ElkModel.Graph|ElkModel.Cell) {
         }
         dummyNum += 1;
     }
+}
+
+function isDummyId(id: string, dummyIdSuffix: string): boolean {
+    const prefixedSuffix = '.' + dummyIdSuffix;
+    return id === dummyIdSuffix || id.slice(-prefixedSuffix.length) === prefixedSuffix;
 }

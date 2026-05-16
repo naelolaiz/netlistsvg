@@ -13,17 +13,24 @@ import Skin from '../lib/Skin';
  * Helper function for tests that use test files
  * @param testFile the name of the test case, don't include path or extension
  */
-function createFlatModule(testFile: string): FlatModule {
+function createFlatModule(testFile: string, config?: Config): FlatModule {
     const testPath = path.join(__dirname,'digital', testFile + '.json');
     const defaultSkin = path.join(__dirname, '../lib/default.svg');
     const defaultConfig = path.join(__dirname, '../lib/config.json');
     const testStr = fs.readFileSync(testPath).toString();
     const netlist: Yosys.Netlist = json5.parse(testStr);
-    const config: Config = json5.parse(fs.readFileSync(defaultConfig).toString());
+    const flatConfig: Config = arguments.length < 2 ?
+        json5.parse(fs.readFileSync(defaultConfig).toString()) :
+        config;
     const skin = onml.parse(fs.readFileSync(defaultSkin).toString());
     Skin.skin = skin;
-    return FlatModule.fromNetlist(netlist, config);
+    return FlatModule.fromNetlist(netlist, flatConfig);
 }
+
+test('config is optional', () => {
+    const flatModule = createFlatModule('hyperedges', undefined);
+    expect(flatModule.moduleName).toEqual('hyperedges');
+});
 
 /**
  * make sure the correct number of splits and joins is calculated.

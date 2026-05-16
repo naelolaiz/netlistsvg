@@ -1,13 +1,17 @@
 "use strict";
-var __spreadArrays = (this && this.__spreadArrays) || function () {
-    for (var s = 0, i = 0, il = arguments.length; i < il; i++) s += arguments[i].length;
-    for (var r = Array(s), k = 0, i = 0; i < il; i++)
-        for (var a = arguments[i], j = 0, jl = a.length; j < jl; j++, k++)
-            r[k] = a[j];
-    return r;
+var __spreadArray = (this && this.__spreadArray) || function (to, from, pack) {
+    if (pack || arguments.length === 2) for (var i = 0, l = from.length, ar; i < l; i++) {
+        if (ar || !(i in from)) {
+            if (!ar) ar = Array.prototype.slice.call(from, 0, i);
+            ar[i] = from[i];
+        }
+    }
+    return to.concat(ar || Array.prototype.slice.call(from));
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.removeDummyEdges = void 0;
+exports.default = drawModule;
+exports.drawSubModule = drawSubModule;
+exports.removeDummyEdges = removeDummyEdges;
 var elkGraph_1 = require("./elkGraph");
 var Skin_1 = require("./Skin");
 var _ = require("lodash");
@@ -122,11 +126,10 @@ function drawModule(g, module) {
             }
         },
     });
-    var elements = __spreadArrays([styles], nodes, lines);
-    var ret = __spreadArrays(['svg', svgAttrs], elements);
+    var elements = __spreadArray(__spreadArray([styles], nodes, true), lines, true);
+    var ret = __spreadArray(['svg', svgAttrs], elements, true);
     return onml.s(ret);
 }
-exports.default = drawModule;
 function drawSubModule(c, subModule) {
     var nodes = [];
     _.forEach(subModule.nodes, function (n) {
@@ -178,11 +181,10 @@ function drawSubModule(c, subModule) {
     var svgAttrs = Skin_1.default.skin[1];
     svgAttrs.width = c.width.toString();
     svgAttrs.height = c.height.toString();
-    var elements = __spreadArrays(nodes, lines);
-    var ret = __spreadArrays(['svg', svgAttrs], elements);
+    var elements = __spreadArray(__spreadArray([], nodes, true), lines, true);
+    var ret = __spreadArray(['svg', svgAttrs], elements, true);
     return ret;
 }
-exports.drawSubModule = drawSubModule;
 function which_dir(start, end) {
     if (end.x === start.x && end.y === start.y) {
         throw new Error('start and end are the same');
@@ -205,6 +207,10 @@ function which_dir(start, end) {
     throw new Error('unexpected direction');
 }
 function findBendNearDummy(net, dummyIsSource, dummyLoc) {
+    var junctions = _.flatMap(net, function (edge) { return edge.junctionPoints || []; });
+    if (junctions.length > 0) {
+        return nearestPoint(junctions, dummyLoc);
+    }
     var candidates = net.map(function (edge) {
         var bends = edge.sections[0].bendPoints || [null];
         if (dummyIsSource) {
@@ -214,18 +220,36 @@ function findBendNearDummy(net, dummyIsSource, dummyLoc) {
             return _.last(bends);
         }
     }).filter(function (p) { return p !== null; });
-    return _.minBy(candidates, function (pt) {
+    if (candidates.length === 0) {
+        return dummyLoc;
+    }
+    return nearestPoint(candidates, dummyLoc);
+}
+function nearestPoint(points, dummyLoc) {
+    return _.minBy(points, function (pt) {
         return Math.abs(dummyLoc.x - pt.x) + Math.abs(dummyLoc.y - pt.y);
     });
 }
 function removeDummyEdges(g) {
+    if (!g.edges) {
+        return;
+    }
     // go through each edge group for each dummy
     var dummyNum = 0;
     var _loop_1 = function () {
-        var dummyId = '$d_' + String(dummyNum);
+        var dummyIdSuffix = '$d_' + String(dummyNum);
+        var dummyId = null;
         // find all edges connected to this dummy
         var edgeGroup = _.filter(g.edges, function (e) {
-            return e.source === dummyId || e.target === dummyId;
+            if (isDummyId(e.source, dummyIdSuffix)) {
+                dummyId = e.source;
+                return true;
+            }
+            if (isDummyId(e.target, dummyIdSuffix)) {
+                dummyId = e.target;
+                return true;
+            }
+            return false;
         });
         if (edgeGroup.length === 0) {
             return "break";
@@ -306,4 +330,7 @@ function removeDummyEdges(g) {
             break;
     }
 }
-exports.removeDummyEdges = removeDummyEdges;
+function isDummyId(id, dummyIdSuffix) {
+    var prefixedSuffix = '.' + dummyIdSuffix;
+    return id === dummyIdSuffix || id.slice(-prefixedSuffix.length) === prefixedSuffix;
+}
