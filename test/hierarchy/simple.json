@@ -1,0 +1,69 @@
+{
+  "modules": {
+    "child": {
+      "ports": {
+        "a": {
+          "direction": "input",
+          "bits": [2]
+        },
+        "b": {
+          "direction": "input",
+          "bits": [3]
+        },
+        "y": {
+          "direction": "output",
+          "bits": [4]
+        }
+      },
+      "cells": {
+        "and_gate": {
+          "type": "$and",
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [2],
+            "B": [3],
+            "Y": [4]
+          }
+        }
+      }
+    },
+    "top": {
+      "attributes": {
+        "top": 1
+      },
+      "ports": {
+        "a": {
+          "direction": "input",
+          "bits": [2]
+        },
+        "b": {
+          "direction": "input",
+          "bits": [3]
+        },
+        "y": {
+          "direction": "output",
+          "bits": [4]
+        }
+      },
+      "cells": {
+        "u_child": {
+          "type": "child",
+          "port_directions": {
+            "a": "input",
+            "b": "input",
+            "y": "output"
+          },
+          "connections": {
+            "a": [2],
+            "b": [3],
+            "y": [4]
+          }
+        }
+      }
+    }
+  }
+}
