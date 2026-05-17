@@ -19,7 +19,7 @@ npm install -g netlistsvg
 
 You can execute netlistsvg like this:
 ```
-netlistsvg input_json_file [-o output_svg_file] [--skin skin_file] [--layout elk_json_file] [--config config_json_file]
+netlistsvg input_json_file [-o output_svg_file] [--skin skin_file] [--layout elk_json_file] [--config config_json_file] [--link cell_id=url] [--relabel cell_id=text]
 ```
 The default value for the output file is out.svg.
 
@@ -179,6 +179,11 @@ The configuration contains multiple options to customize the layout. The default
       "ids": []
     }
   },
+  "render": {
+    "beautifyLabels": true,
+    "cellLabels": {},
+    "cellLinks": {}
+  },
   "top": {
     "enable": false,
     "module": ""
@@ -194,6 +199,13 @@ In the `"hierarchy"` subsection, hierarchical schematics can be enabled and conf
 Submodule styling, including background colour, is controlled by the `sub_odd` and `sub_even` templates in the skin file.
 
 The `"top"` subsection can be used to define a different top module. If `"enable"` is true, then the module defined in `"module"` will be used as top module, instead of the top module defined in the input JSON file.
+
+The `"render"` subsection controls SVG output details:
+* `"beautifyLabels"`: Rewrite generated Yosys/GHDL type names in generic and hierarchical cell labels. For example, `$paramod\foo\WIDTH=...` and `foo_Brtl_8` render as `foo`.
+* `"cellLabels"`: Map cell IDs to explicit visible labels. The key is the cell name without the `cell_` SVG prefix.
+* `"cellLinks"`: Map cell IDs to URLs. Linked cells are wrapped in an SVG `<a>` element so viewers can click through to related diagrams.
+
+The `--relabel cell_id=text`, `--link cell_id=url`, and `--no-beautify-labels` CLI options override or extend the same render settings for one run.
 
 # Examples
 
