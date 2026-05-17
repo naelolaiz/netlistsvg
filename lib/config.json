@@ -1,0 +1,20 @@
+{
+  "hierarchy": {
+    "enable": "off",
+    "expandLevel": 0,
+    "expandModules": {
+      "types": [],
+      "ids": []
+    }
+  },
+  "render": {
+    "beautifyLabels": true,
+    "cellLabels": {},
+    "cellLinks": {},
+    "internalSubmoduleLinks": false
+  },
+  "top": {
+    "enable": false,
+    "module": ""
+  }
+}

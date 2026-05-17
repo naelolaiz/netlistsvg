@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Node 20 tests and hierarchy render
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: >
+          docker run --rm
+          -v "$PWD:/work"
+          -w /work
+          docker.io/library/node:20-bullseye
+          npm install --legacy-peer-deps --no-package-lock --no-audit --no-fund
+
+      - name: Run test suite
+        run: >
+          docker run --rm
+          -v "$PWD:/work"
+          -w /work
+          docker.io/library/node:20-bullseye
+          npm test
+
+      - name: Render flat and hierarchical comparison SVGs
+        run: |
+          mkdir -p artifacts/hierarchy
+
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            docker.io/library/node:20-bullseye \
+            node bin/netlistsvg.js \
+              test/hierarchy/simple.json \
+              -o artifacts/hierarchy/simple-flat.svg \
+              --skin lib/default.svg \
+              --config lib/config.json
+
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            docker.io/library/node:20-bullseye \
+            node bin/netlistsvg.js \
+              test/hierarchy/simple.json \
+              -o artifacts/hierarchy/simple-hierarchy.svg \
+              --skin lib/default.svg \
+              --config test/hierarchy/expand-all.config.json
+
+          test -s artifacts/hierarchy/simple-flat.svg
+          test -s artifacts/hierarchy/simple-hierarchy.svg
+
+          grep -q 'cell_u_child' artifacts/hierarchy/simple-flat.svg
+          if grep -q 'cell_and_gate' artifacts/hierarchy/simple-flat.svg; then
+            echo "Flat render unexpectedly contains expanded child logic"
+            exit 1
+          fi
+          grep -q 'cell_and_gate' artifacts/hierarchy/simple-hierarchy.svg
+
+      - name: Upload hierarchy render artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: hierarchy-render-comparison
+          path: artifacts/hierarchy/*.svg

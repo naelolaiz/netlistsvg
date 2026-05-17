@@ -1,10 +1,9 @@
 declare module 'onml' {
     // avoid the headache of recursive type
     export type Element = [
-        string, 
-        Attributes?, 
-        string?,
-        ...Array<any>[],
+        string,
+        Attributes?,
+        ...any[]
     ];
 
     export interface Attributes {

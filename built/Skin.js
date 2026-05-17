@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.Skin = void 0;
 var onml = require("onml");
 var _ = require("lodash");
 var Skin;
@@ -7,8 +8,13 @@ var Skin;
     Skin.skin = null;
     function getPortsWithPrefix(template, prefix) {
         var ports = _.filter(template, function (e) {
-            if (e instanceof Array && e[0] === 'g') {
-                return e[1]['s:pid'].startsWith(prefix);
+            try {
+                if (e instanceof Array && e[0] === 'g') {
+                    return e[1]['s:pid'].startsWith(prefix);
+                }
+            }
+            catch (exception) {
+                // Do nothing if the SVG group doesn't have a pin id.
             }
         });
         return ports;
@@ -58,7 +64,8 @@ var Skin;
         });
     }
     Skin.getLateralPortPids = getLateralPortPids;
-    function findSkinType(type) {
+    function findSkinType(type, depth) {
+        if (depth === void 0) { depth = null; }
         var ret = null;
         onml.traverse(Skin.skin, {
             enter: function (node, parent) {
@@ -68,13 +75,25 @@ var Skin;
             },
         });
         if (ret == null) {
-            onml.traverse(Skin.skin, {
-                enter: function (node) {
-                    if (node.attr['s:type'] === 'generic') {
-                        ret = node;
-                    }
-                },
-            });
+            if (depth == null) {
+                onml.traverse(Skin.skin, {
+                    enter: function (node) {
+                        if (node.attr['s:type'] === 'generic') {
+                            ret = node;
+                        }
+                    },
+                });
+            }
+            else {
+                var sub_1 = ['sub_odd', 'sub_even'];
+                onml.traverse(Skin.skin, {
+                    enter: function (node) {
+                        if (node.attr['s:type'] === sub_1[depth % 2]) {
+                            ret = node;
+                        }
+                    },
+                });
+            }
         }
         return ret.full;
     }
@@ -120,5 +139,5 @@ var Skin;
         return vals;
     }
     Skin.getProperties = getProperties;
-})(Skin = exports.Skin || (exports.Skin = {}));
+})(Skin || (exports.Skin = Skin = {}));
 exports.default = Skin;

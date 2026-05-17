@@ -1,9 +1,11 @@
-import { SigsByConstName, NameToPorts, addToDefaultDict } from './FlatModule';
+import { SigsByConstName, NameToPorts, addToDefaultDict, FlatModule } from './FlatModule';
 import Yosys from './YosysModel';
 import Skin from './Skin';
 import {Port} from './Port';
+import { drawSubModule } from './drawModule';
+import { beautifyCellTypeLabel } from './labels';
 import _ = require('lodash');
-import { ElkModel } from './elkGraph';
+import { ElkModel, buildElkGraph } from './elkGraph';
 import clone = require('clone');
 import onml = require('onml');
 
@@ -13,15 +15,16 @@ export default class Cell {
      * @param yPort the Yosys Port with our port data
      * @param name the name of the port
      */
-    public static fromPort(yPort: Yosys.ExtPort, name: string): Cell {
+    public static fromPort(yPort: Yosys.ExtPort, name: string, parent: string): Cell {
         const isInput: boolean = yPort.direction === Yosys.Direction.Input;
         if (isInput) {
-            return new Cell(name, '$_inputExt_', [], [new Port('Y', yPort.bits)], {});
+            return new Cell(name, '$_inputExt_', [], [new Port('Y', yPort.bits)], {}, parent);
         }
-        return new Cell(name, '$_outputExt_', [new Port('A', yPort.bits)], [], {});
+        return new Cell(name, '$_outputExt_', [new Port('A', yPort.bits)], [], {}, parent);
     }
 
-    public static fromYosysCell(yCell: Yosys.Cell, name: string) {
+    public static fromYosysCell(yCell: Yosys.Cell, name: string, parent: string) {
+        this.setAlternateCellType(yCell);
         const template = Skin.findSkinType(yCell.type);
         const templateInputPids = Skin.getInputPids(template);
         const templateOutputPids = Skin.getOutputPids(template);
@@ -36,11 +39,11 @@ export default class Cell {
             inputPorts = ports.filter((port) => port.keyIn(inputPids));
             outputPorts = ports.filter((port) => port.keyIn(outputPids));
         }
-        return new Cell(name, yCell.type, inputPorts, outputPorts, yCell.attributes);
+        return new Cell(name, yCell.type, inputPorts, outputPorts, yCell.attributes, parent);
     }
 
-    public static fromConstantInfo(name: string, constants: number[]): Cell {
-        return new Cell(name, '$_constant_', [], [new Port('Y', constants)], {});
+    public static fromConstantInfo(name: string, constants: number[], parent: string): Cell {
+        return new Cell(name, '$_constant_', [], [new Port('Y', constants)], {}, parent);
     }
 
     /**
@@ -48,14 +51,14 @@ export default class Cell {
      * @param target string name of net (starts and ends with and delimited by commas)
      * @param sources list of index strings (one number, or two numbers separated by a colon)
      */
-    public static fromJoinInfo(target: string, sources: string[]): Cell {
+    public static fromJoinInfo(target: string, sources: string[], parent: string): Cell {
         const signalStrs: string[] = target.slice(1, -1).split(',');
         const signals: number[] = signalStrs.map((ss) =>  Number(ss));
         const joinOutPorts: Port[] = [new Port('Y', signals)];
         const inPorts: Port[] = sources.map((name) => {
             return new Port(name, getBits(signals, name));
         });
-        return new Cell('$join$' + target, '$_join_', inPorts, joinOutPorts, {});
+        return new Cell('$join$' + target, '$_join_', inPorts, joinOutPorts, {}, parent);
     }
 
     /**
@@ -63,7 +66,7 @@ export default class Cell {
      * @param source string name of net (starts and ends with and delimited by commas)
      * @param targets list of index strings (one number, or two numbers separated by a colon)
      */
-    public static fromSplitInfo(source: string, targets: string[]): Cell {
+    public static fromSplitInfo(source: string, targets: string[], parent: string): Cell {
         // turn string into array of signal names
         const sigStrs: string[] = source.slice(1, -1).split(',');
         // convert the signals into actual numbers
@@ -74,9 +77,48 @@ export default class Cell {
             const sigs: Yosys.Signals = getBits(signals, name);
             return new Port(name, sigs);
         });
-        return new Cell('$split$' + source, '$_split_', inPorts, splitOutPorts, {});
+        return new Cell('$split$' + source, '$_split_', inPorts, splitOutPorts, {}, parent);
     }
 
+    // Set cells to alternate types/tags based on their parameters
+    private static setAlternateCellType(yCell: Yosys.Cell) {
+        if ('parameters' in yCell) {
+            // if it has a WIDTH parameter greater than one
+            // and doesn't have an address parameter (not a memory cell)
+            if ('WIDTH' in yCell.parameters &&
+                yCell.parameters.WIDTH > 1 &&
+                !('ADDR' in yCell.parameters) &&
+                !yCell.type.endsWith('-bus')) {
+                // turn into a bus version
+                yCell.type = yCell.type + '-bus';
+            }
+        }
+    }
+
+    public static createSubModule(yCell: Yosys.Cell, name: string, parent: string,
+                                  subModule: Yosys.Module, depth: number): Cell {
+        this.setAlternateCellType(yCell);
+        const template = Skin.findSkinType(yCell.type);
+        const templateInputPids = Skin.getInputPids(template);
+        const templateOutputPids = Skin.getOutputPids(template);
+        const ports: Port[] = _.map(yCell.connections, (conn, portName) => {
+            return new Port(portName, conn);
+        });
+        let inputPorts = ports.filter((port) => port.keyIn(templateInputPids));
+        let outputPorts = ports.filter((port) => port.keyIn(templateOutputPids));
+        if (inputPorts.length + outputPorts.length !== ports.length) {
+            const inputPids: string[] = Yosys.getInputPortPids(yCell);
+            const outputPids: string[] = Yosys.getOutputPortPids(yCell);
+            inputPorts = ports.filter((port) => port.keyIn(inputPids));
+            outputPorts = ports.filter((port) => port.keyIn(outputPids));
+        }
+        const mod = new FlatModule(subModule, name, depth + 1, parent);
+        return new Cell(name, yCell.type, inputPorts, outputPorts, yCell.attributes, parent, mod, depth);
+    }
+
+    public parent: string;
+    public subModule: FlatModule;
+    public depth: number;
     protected key: string;
     protected type: string;
     protected inputPorts: Port[];
@@ -87,12 +129,18 @@ export default class Cell {
                 type: string,
                 inputPorts: Port[],
                 outputPorts: Port[],
-                attributes: Yosys.CellAttributes) {
+                attributes: Yosys.CellAttributes,
+                parent: string,
+                subModule: FlatModule = null,
+                depth: number = null) {
         this.key = key;
         this.type = type;
         this.inputPorts = inputPorts;
         this.outputPorts = outputPorts;
         this.attributes = attributes || {};
+        this.parent = parent;
+        this.subModule = subModule;
+        this.depth = depth;
         inputPorts.forEach((ip) => {
             ip.parentNode = this;
         });
@@ -126,7 +174,7 @@ export default class Cell {
                          maxNum: number,
                          constantCollector: Cell[]): number {
         this.inputPorts.forEach((ip) => {
-            maxNum = ip.findConstants(sigsByConstantName, maxNum, constantCollector);
+            maxNum = ip.findConstants(sigsByConstantName, maxNum, constantCollector, this.parent);
         });
         return maxNum;
     }
@@ -172,7 +220,7 @@ export default class Cell {
     }
 
     public getTemplate(): any {
-        return Skin.findSkinType(this.type);
+        return Skin.findSkinType(this.type, this.depth);
     }
 
     public buildElkChild(): ElkModel.Cell {
@@ -204,13 +252,111 @@ export default class Cell {
             const outPorts = this.outputPorts.map((op, i) =>
                 op.getGenericElkPort(i, outTemplates, 'out'));
             const cell: ElkModel.Cell = {
-                id: this.key,
+                id: this.parent + '.' + this.key,
                 width: Number(template[1]['s:width']),
                 height: Number(this.getGenericHeight()),
                 ports: inPorts.concat(outPorts),
                 layoutOptions: layoutAttrs,
                 labels: [],
             };
+            if (type === 'split') {
+                cell.ports[0].y = cell.height / 2;
+            }
+            if (type === 'join') {
+                cell.ports[cell.ports.length - 1].y = cell.height / 2;
+            }
+            if (fixedPosX) {
+                cell.x = fixedPosX;
+            }
+            if (fixedPosY) {
+                cell.y = fixedPosY;
+            }
+            this.addLabels(template, cell);
+            return cell;
+        }
+        if (type === 'sub_odd' || type === 'sub_even') {
+            const inTemplates: any[] = Skin.getPortsWithPrefix(template, 'in');
+            const outTemplates: any[] = Skin.getPortsWithPrefix(template, 'out');
+            const inPorts = this.inputPorts.map((ip, i) =>
+                ip.getGenericElkPort(i, inTemplates, 'in'));
+            const outPorts = this.outputPorts.map((op, i) =>
+                op.getGenericElkPort(i, outTemplates, 'out'));
+            const elk = buildElkGraph(this.subModule);
+            const cell: ElkModel.Cell = {
+                id: this.parent + '.' + this.key,
+                layoutOptions: {'org.eclipse.elk.portConstraints': 'FIXED_SIDE'},
+                labels: [],
+                ports: inPorts.concat(outPorts),
+                children: [],
+                edges: [],
+            };
+            _.forEach(elk.children, (child) => {
+                let inc: boolean = true;
+                _.forEach(cell.ports, (port) => {
+                    if (this.parent + '.' + child.id === port.id) {
+                        inc = false;
+                    }
+                });
+                if (inc) {
+                    cell.children.push(child);
+                }
+            });
+            _.forEach(elk.edges, (edge: ElkModel.Edge) => {
+                const edgeAdd = edge;
+                _.forEach(cell.ports, (port) => {
+                    if (_.includes(inPorts, port)) {
+                        if (edgeAdd.sourcePort === port.id.slice(this.parent.length + 1) + '.Y') {
+                            const source: string[] = port.id.split('.');
+                            source.pop();
+                            edgeAdd.source = source.join('.');
+                            edgeAdd.sourcePort = port.id;
+                        }
+                    } else {
+                        if (edgeAdd.targetPort === port.id.slice(this.parent.length + 1) + '.A') {
+                            const target: string[] = port.id.split('.');
+                            target.pop();
+                            edgeAdd.target = target.join('.');
+                            edgeAdd.targetPort = port.id;
+                        }
+                    }
+                });
+                if (edgeAdd.source === edgeAdd.target) {
+                    const dummyId = this.subModule.moduleName + '.$d_' + edgeAdd.sourcePort + '_' + edgeAdd.targetPort;
+                    const dummy: ElkModel.Cell = {
+                        id: dummyId,
+                        width: 0,
+                        height: 0,
+                        ports: [
+                            {
+                            id: dummyId + '.pin',
+                            width: 0,
+                            height: 0,
+                            },
+                            {
+                            id: dummyId + '.pout',
+                            width: 0,
+                            height: 0,
+                            },
+                        ],
+                        layoutOptions: { 'org.eclipse.elk.portConstraints': 'FIXED_SIDE' },
+                    };
+                    const edgeId = edgeAdd.id;
+                    const edgeAddCopy = {...edgeAdd};
+                    edgeAdd.target = dummyId;
+                    edgeAdd.targetPort = dummyId + '.pin';
+                    edgeAdd.id = this.subModule.moduleName + '.e_' + edgeAdd.sourcePort + '_' + edgeAdd.targetPort;
+                    ElkModel.wireNameLookup[edgeAdd.id] = ElkModel.wireNameLookup[edgeId];
+                    edgeAddCopy.source = dummyId;
+                    edgeAddCopy.sourcePort = dummyId + '.pout';
+                    edgeAddCopy.id = this.subModule.moduleName + '.e_' + edgeAddCopy.sourcePort +
+                                     '_' + edgeAddCopy.targetPort;
+                    ElkModel.wireNameLookup[edgeAddCopy.id] = ElkModel.wireNameLookup[edgeId];
+                    cell.edges.push(edgeAdd, edgeAddCopy);
+                    cell.children.push(dummy);
+                } else {
+                    cell.edges.push(edgeAdd);
+                }
+            });
             if (fixedPosX) {
                 cell.x = fixedPosX;
             }
@@ -222,7 +368,7 @@ export default class Cell {
         }
         const ports: ElkModel.Port[] = Skin.getPortsWithPrefix(template, '').map((tp) => {
             return {
-                id: this.key + '.' + tp[1]['s:pid'],
+                id: this.parent + '.' + this.key + '.' + tp[1]['s:pid'],
                 width: 0,
                 height: 0,
                 x: Number(tp[1]['s:x']),
@@ -231,7 +377,7 @@ export default class Cell {
         });
         const nodeWidth: number = Number(template[1]['s:width']);
         const ret: ElkModel.Cell = {
-            id: this.key,
+            id: this.parent + '.' + this.key,
             width: nodeWidth,
             height: Number(template[1]['s:height']),
             ports,
@@ -251,8 +397,10 @@ export default class Cell {
     public render(cell: ElkModel.Cell): onml.Element {
         const template = this.getTemplate();
         const tempclone = clone(template);
+        let link = this.getCellLink();
         for (const label of cell.labels) {
-            const attrName = label.id.split('.')[2];
+            const labelIDSplit = label.id.split('.');
+            const attrName = labelIDSplit[labelIDSplit.length - 1];
             setTextAttribute(tempclone, attrName, label.text);
         }
         for (let i = 2; i < tempclone.length; i++) {
@@ -323,10 +471,96 @@ export default class Cell {
                 tempclone.push(portClone);
             });
             // first child of generic must be a text node.
-            tempclone[2][2] = this.type;
+            tempclone[2][2] = this.getTypeLabel();
+        } else if (template[1]['s:type'] === 'sub_odd' || template[1]['s:type'] === 'sub_even') {
+            const subModule = drawSubModule(cell, this.subModule);
+            if (link === null && this.shouldCreateInternalSubmoduleLink()) {
+                const pageId = FlatModule.addDrilldownPage(cell.id, clone(subModule));
+                link = '#' + pageId;
+            }
+            tempclone[3][1].width = subModule[1].width;
+            tempclone[3][1].height = subModule[1].height;
+            tempclone[2][1].x = tempclone[3][1].width / 2;
+            tempclone[2][2] = this.getTypeLabel();
+            tempclone.pop();
+            tempclone.pop();
+            tempclone.pop();
+            tempclone.pop();
+            subModule.shift();
+            subModule.shift();
+            _.forEach(subModule, (child) => tempclone.push(child));
+            const inPorts = Skin.getPortsWithPrefix(template, 'in');
+            const outPorts = Skin.getPortsWithPrefix(template, 'out');
+            this.inputPorts.forEach((port, i) => {
+                const portElk = _.find(cell.ports, (p) => p.id === cell.id + '.' + port.Key);
+                const portClone = clone(inPorts[0]);
+                portClone[portClone.length - 1][2] = port.Key;
+                portClone[1].transform = 'translate(' + portElk.x + ','
+                    + portElk.y + ')';
+                portClone[1].id = 'port_' + port.parentNode.Key + '~' + port.Key;
+                tempclone.push(portClone);
+            });
+            this.outputPorts.forEach((port, i) => {
+                const portElk = _.find(cell.ports, (p) => p.id === cell.id + '.' + port.Key);
+                const portClone = clone(outPorts[0]);
+                portClone[portClone.length - 1][2] = port.Key;
+                portClone[1].transform = 'translate(' + portElk.x + ','
+                    + portElk.y + ')';
+                portClone[1].id = 'port_' + port.parentNode.Key + '~' + port.Key;
+                tempclone.push(portClone);
+            });
         }
         setClass(tempclone, '$cell_id', 'cell_' + this.key);
+        if (link !== null) {
+            makeCellBodyClickable(tempclone);
+            return ['a', {'xlink:href': link}, tempclone];
+        }
         return tempclone;
+    }
+
+    private getCellLink(): string {
+        const config = FlatModule.config;
+        if (config && config.render && config.render.cellLinks &&
+                this.key in config.render.cellLinks) {
+            return config.render.cellLinks[this.key];
+        }
+        return null;
+    }
+
+    private shouldCreateInternalSubmoduleLink(): boolean {
+        const config = FlatModule.config;
+        return !!(config && config.render && config.render.internalSubmoduleLinks === true);
+    }
+
+    private getConfiguredCellLabel(): string {
+        const config = FlatModule.config;
+        if (config && config.render && config.render.cellLabels &&
+                this.key in config.render.cellLabels) {
+            return config.render.cellLabels[this.key];
+        }
+        return null;
+    }
+
+    private getModuleHdlName(): string {
+        const netlist = FlatModule.netlist;
+        if (netlist && netlist.modules && netlist.modules[this.type] &&
+                netlist.modules[this.type].attributes &&
+                typeof netlist.modules[this.type].attributes.hdlname === 'string') {
+            return netlist.modules[this.type].attributes.hdlname;
+        }
+        return null;
+    }
+
+    private getTypeLabel(): string {
+        const configuredLabel = this.getConfiguredCellLabel();
+        if (configuredLabel !== null) {
+            return configuredLabel;
+        }
+        const config = FlatModule.config;
+        if (!config || !config.render || config.render.beautifyLabels) {
+            return beautifyCellTypeLabel(this.type, this.getModuleHdlName());
+        }
+        return this.type;
     }
 
     private addLabels(template, cell: ElkModel.Cell) {
@@ -336,13 +570,16 @@ export default class Cell {
                     const attrName = node.attr['s:attribute'];
                     let newString;
                     if (attrName === 'ref' || attrName === 'id') {
-                        if (this.type === '$_constant_' && this.key.length > 3) {
+                        const configuredLabel = this.getConfiguredCellLabel();
+                        if (configuredLabel !== null) {
+                            newString = configuredLabel;
+                        } else if (this.type === '$_constant_' && this.key.length > 3) {
                             const num: number = parseInt(this.key, 2);
                             newString = '0x' + num.toString(16);
                         } else {
                             newString = this.key;
                         }
-                        this.attributes[attrName] = this.key;
+                        this.attributes[attrName] = newString;
                     } else if (attrName in this.attributes) {
                         newString = this.attributes[attrName];
                     } else {
@@ -383,6 +620,18 @@ function setGenericSize(tempclone, height) {
         enter: (node) => {
             if (node.name === 'rect' && node.attr['s:generic'] === 'body') {
                 node.attr.height = height;
+            }
+        },
+    });
+}
+
+function makeCellBodyClickable(tempclone) {
+    let done = false;
+    onml.traverse(tempclone, {
+        enter: (node) => {
+            if (!done && node.name === 'rect') {
+                node.attr['pointer-events'] = 'all';
+                done = true;
             }
         },
     });
