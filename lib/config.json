@@ -10,7 +10,8 @@
   "render": {
     "beautifyLabels": true,
     "cellLabels": {},
-    "cellLinks": {}
+    "cellLinks": {},
+    "internalSubmoduleLinks": false
   },
   "top": {
     "enable": false,

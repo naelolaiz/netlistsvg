@@ -182,7 +182,8 @@ The configuration contains multiple options to customize the layout. The default
   "render": {
     "beautifyLabels": true,
     "cellLabels": {},
-    "cellLinks": {}
+    "cellLinks": {},
+    "internalSubmoduleLinks": false
   },
   "top": {
     "enable": false,
@@ -204,6 +205,7 @@ The `"render"` subsection controls SVG output details:
 * `"beautifyLabels"`: Rewrite generated Yosys/GHDL type names in generic and hierarchical cell labels. For example, `$paramod\foo\WIDTH=...` and `foo_Brtl_8` render as `foo`.
 * `"cellLabels"`: Map cell IDs to explicit visible labels. The key is the cell name without the `cell_` SVG prefix.
 * `"cellLinks"`: Map cell IDs to URLs. Linked cells are wrapped in an SVG `<a>` element so viewers can click through to related diagrams.
+* `"internalSubmoduleLinks"`: When hierarchy rendering expands submodules, automatically link each submodule cell to an isolated same-file SVG page for that submodule. Explicit `"cellLinks"` entries take precedence.
 
 The `--relabel cell_id=text`, `--link cell_id=url`, and `--no-beautify-labels` CLI options override or extend the same render settings for one run.
 

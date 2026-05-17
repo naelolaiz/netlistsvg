@@ -71,6 +71,7 @@ var FlatModule = /** @class */ (function () {
         this.modNames = Object.keys(netlist.modules);
         this.netlist = netlist;
         this.config = (0, ConfigModel_1.normalizeConfig)(config);
+        this.resetDrilldownPages();
         var topName = null;
         if (this.config.top.enable) {
             topName = this.config.top.module;
@@ -91,6 +92,54 @@ var FlatModule = /** @class */ (function () {
         }
         var top = netlist.modules[topName];
         return new FlatModule(top, topName, 0);
+    };
+    FlatModule.resetDrilldownPages = function () {
+        this.drilldownPages = [];
+        this.drilldownPageIds = {};
+        this.drilldownPagesByCellId = {};
+    };
+    FlatModule.addDrilldownPage = function (rawId, svg) {
+        if (this.drilldownPagesByCellId[rawId]) {
+            return this.drilldownPagesByCellId[rawId];
+        }
+        var base = 'netlistsvg_page_' + rawId.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+        var id = base || 'netlistsvg_page_submodule';
+        var suffix = 2;
+        while (this.drilldownPageIds[id]) {
+            id = base + '_' + suffix;
+            suffix += 1;
+        }
+        this.drilldownPageIds[id] = true;
+        this.drilldownPagesByCellId[rawId] = id;
+        this.drilldownPages.push({ id: id, cellId: rawId, svg: svg });
+        return id;
+    };
+    FlatModule.setDrilldownPageSvg = function (cellId, svg) {
+        var pageId = this.drilldownPagesByCellId[cellId];
+        if (!pageId) {
+            return;
+        }
+        for (var _i = 0, _a = this.drilldownPages; _i < _a.length; _i++) {
+            var page = _a[_i];
+            if (page.id === pageId) {
+                page.svg = svg;
+                return;
+            }
+        }
+    };
+    FlatModule.walkSubModuleCells = function (top) {
+        var out = [];
+        var visit = function (mod) {
+            for (var _i = 0, _a = mod.nodes; _i < _a.length; _i++) {
+                var node = _a[_i];
+                if (node.subModule) {
+                    out.push(node);
+                    visit(node.subModule);
+                }
+            }
+        };
+        visit(top);
+        return out;
     };
     // converts input ports with constant assignments to constant nodes
     FlatModule.prototype.addConstants = function () {
@@ -143,6 +192,9 @@ var FlatModule = /** @class */ (function () {
         });
         this.wires = wires;
     };
+    FlatModule.drilldownPages = [];
+    FlatModule.drilldownPageIds = {};
+    FlatModule.drilldownPagesByCellId = {};
     return FlatModule;
 }());
 exports.FlatModule = FlatModule;

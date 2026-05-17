@@ -396,6 +396,7 @@ var Cell = /** @class */ (function () {
     Cell.prototype.render = function (cell) {
         var template = this.getTemplate();
         var tempclone = clone(template);
+        var link = this.getCellLink();
         for (var _i = 0, _a = cell.labels; _i < _a.length; _i++) {
             var label = _a[_i];
             var labelIDSplit = label.id.split('.');
@@ -476,6 +477,10 @@ var Cell = /** @class */ (function () {
         }
         else if (template[1]['s:type'] === 'sub_odd' || template[1]['s:type'] === 'sub_even') {
             var subModule = (0, drawModule_1.drawSubModule)(cell, this.subModule);
+            if (link === null && this.shouldCreateInternalSubmoduleLink()) {
+                var pageId = FlatModule_1.FlatModule.addDrilldownPage(cell.id, clone(subModule));
+                link = '#' + pageId;
+            }
             tempclone[3][1].width = subModule[1].width;
             tempclone[3][1].height = subModule[1].height;
             tempclone[2][1].x = tempclone[3][1].width / 2;
@@ -509,7 +514,6 @@ var Cell = /** @class */ (function () {
             });
         }
         setClass(tempclone, '$cell_id', 'cell_' + this.key);
-        var link = this.getCellLink();
         if (link !== null) {
             makeCellBodyClickable(tempclone);
             return ['a', { 'xlink:href': link }, tempclone];
@@ -523,6 +527,10 @@ var Cell = /** @class */ (function () {
             return config.render.cellLinks[this.key];
         }
         return null;
+    };
+    Cell.prototype.shouldCreateInternalSubmoduleLink = function () {
+        var config = FlatModule_1.FlatModule.config;
+        return !!(config && config.render && config.render.internalSubmoduleLinks === true);
     };
     Cell.prototype.getConfiguredCellLabel = function () {
         var config = FlatModule_1.FlatModule.config;

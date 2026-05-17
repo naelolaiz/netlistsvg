@@ -1,21 +1,40 @@
 (function(f){if(typeof exports==="object"&&typeof module!=="undefined"){module.exports=f()}else if(typeof define==="function"&&define.amd){define([],f)}else{var g;if(typeof window!=="undefined"){g=window}else if(typeof global!=="undefined"){g=global}else if(typeof self!=="undefined"){g=self}else{g=this}g.netlistsvg = f()}})(function(){var define,module,exports;return (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
 "use strict";
+var __assign = (this && this.__assign) || function () {
+    __assign = Object.assign || function(t) {
+        for (var s, i = 1, n = arguments.length; i < n; i++) {
+            s = arguments[i];
+            for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p))
+                t[p] = s[p];
+        }
+        return t;
+    };
+    return __assign.apply(this, arguments);
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 var FlatModule_1 = require("./FlatModule");
 var YosysModel_1 = require("./YosysModel");
 var Skin_1 = require("./Skin");
 var Port_1 = require("./Port");
+var drawModule_1 = require("./drawModule");
+var labels_1 = require("./labels");
 var _ = require("lodash");
+var elkGraph_1 = require("./elkGraph");
 var clone = require("clone");
 var onml = require("onml");
 var Cell = /** @class */ (function () {
-    function Cell(key, type, inputPorts, outputPorts, attributes) {
+    function Cell(key, type, inputPorts, outputPorts, attributes, parent, subModule, depth) {
+        if (subModule === void 0) { subModule = null; }
+        if (depth === void 0) { depth = null; }
         var _this = this;
         this.key = key;
         this.type = type;
         this.inputPorts = inputPorts;
         this.outputPorts = outputPorts;
         this.attributes = attributes || {};
+        this.parent = parent;
+        this.subModule = subModule;
+        this.depth = depth;
         inputPorts.forEach(function (ip) {
             ip.parentNode = _this;
         });
@@ -28,14 +47,14 @@ var Cell = /** @class */ (function () {
      * @param yPort the Yosys Port with our port data
      * @param name the name of the port
      */
-    Cell.fromPort = function (yPort, name) {
+    Cell.fromPort = function (yPort, name, parent) {
         var isInput = yPort.direction === YosysModel_1.default.Direction.Input;
         if (isInput) {
-            return new Cell(name, '$_inputExt_', [], [new Port_1.Port('Y', yPort.bits)], {});
+            return new Cell(name, '$_inputExt_', [], [new Port_1.Port('Y', yPort.bits)], {}, parent);
         }
-        return new Cell(name, '$_outputExt_', [new Port_1.Port('A', yPort.bits)], [], {});
+        return new Cell(name, '$_outputExt_', [new Port_1.Port('A', yPort.bits)], [], {}, parent);
     };
-    Cell.fromYosysCell = function (yCell, name) {
+    Cell.fromYosysCell = function (yCell, name, parent) {
         this.setAlternateCellType(yCell);
         var template = Skin_1.default.findSkinType(yCell.type);
         var templateInputPids = Skin_1.default.getInputPids(template);
@@ -51,31 +70,31 @@ var Cell = /** @class */ (function () {
             inputPorts = ports.filter(function (port) { return port.keyIn(inputPids_1); });
             outputPorts = ports.filter(function (port) { return port.keyIn(outputPids_1); });
         }
-        return new Cell(name, yCell.type, inputPorts, outputPorts, yCell.attributes);
+        return new Cell(name, yCell.type, inputPorts, outputPorts, yCell.attributes, parent);
     };
-    Cell.fromConstantInfo = function (name, constants) {
-        return new Cell(name, '$_constant_', [], [new Port_1.Port('Y', constants)], {});
+    Cell.fromConstantInfo = function (name, constants, parent) {
+        return new Cell(name, '$_constant_', [], [new Port_1.Port('Y', constants)], {}, parent);
     };
     /**
      * creates a join cell
      * @param target string name of net (starts and ends with and delimited by commas)
      * @param sources list of index strings (one number, or two numbers separated by a colon)
      */
-    Cell.fromJoinInfo = function (target, sources) {
+    Cell.fromJoinInfo = function (target, sources, parent) {
         var signalStrs = target.slice(1, -1).split(',');
         var signals = signalStrs.map(function (ss) { return Number(ss); });
         var joinOutPorts = [new Port_1.Port('Y', signals)];
         var inPorts = sources.map(function (name) {
             return new Port_1.Port(name, getBits(signals, name));
         });
-        return new Cell('$join$' + target, '$_join_', inPorts, joinOutPorts, {});
+        return new Cell('$join$' + target, '$_join_', inPorts, joinOutPorts, {}, parent);
     };
     /**
      * creates a split cell
      * @param source string name of net (starts and ends with and delimited by commas)
      * @param targets list of index strings (one number, or two numbers separated by a colon)
      */
-    Cell.fromSplitInfo = function (source, targets) {
+    Cell.fromSplitInfo = function (source, targets, parent) {
         // turn string into array of signal names
         var sigStrs = source.slice(1, -1).split(',');
         // convert the signals into actual numbers
@@ -86,7 +105,7 @@ var Cell = /** @class */ (function () {
             var sigs = getBits(signals, name);
             return new Port_1.Port(name, sigs);
         });
-        return new Cell('$split$' + source, '$_split_', inPorts, splitOutPorts, {});
+        return new Cell('$split$' + source, '$_split_', inPorts, splitOutPorts, {}, parent);
     };
     // Set cells to alternate types/tags based on their parameters
     Cell.setAlternateCellType = function (yCell) {
@@ -95,11 +114,31 @@ var Cell = /** @class */ (function () {
             // and doesn't have an address parameter (not a memory cell)
             if ('WIDTH' in yCell.parameters &&
                 yCell.parameters.WIDTH > 1 &&
-                !('ADDR' in yCell.parameters)) {
+                !('ADDR' in yCell.parameters) &&
+                !yCell.type.endsWith('-bus')) {
                 // turn into a bus version
                 yCell.type = yCell.type + '-bus';
             }
         }
+    };
+    Cell.createSubModule = function (yCell, name, parent, subModule, depth) {
+        this.setAlternateCellType(yCell);
+        var template = Skin_1.default.findSkinType(yCell.type);
+        var templateInputPids = Skin_1.default.getInputPids(template);
+        var templateOutputPids = Skin_1.default.getOutputPids(template);
+        var ports = _.map(yCell.connections, function (conn, portName) {
+            return new Port_1.Port(portName, conn);
+        });
+        var inputPorts = ports.filter(function (port) { return port.keyIn(templateInputPids); });
+        var outputPorts = ports.filter(function (port) { return port.keyIn(templateOutputPids); });
+        if (inputPorts.length + outputPorts.length !== ports.length) {
+            var inputPids_2 = YosysModel_1.default.getInputPortPids(yCell);
+            var outputPids_2 = YosysModel_1.default.getOutputPortPids(yCell);
+            inputPorts = ports.filter(function (port) { return port.keyIn(inputPids_2); });
+            outputPorts = ports.filter(function (port) { return port.keyIn(outputPids_2); });
+        }
+        var mod = new FlatModule_1.FlatModule(subModule, name, depth + 1, parent);
+        return new Cell(name, yCell.type, inputPorts, outputPorts, yCell.attributes, parent, mod, depth);
     };
     Object.defineProperty(Cell.prototype, "Type", {
         get: function () {
@@ -134,8 +173,9 @@ var Cell = /** @class */ (function () {
         return _.max([maxVal, atLeast]);
     };
     Cell.prototype.findConstants = function (sigsByConstantName, maxNum, constantCollector) {
+        var _this = this;
         this.inputPorts.forEach(function (ip) {
-            maxNum = ip.findConstants(sigsByConstantName, maxNum, constantCollector);
+            maxNum = ip.findConstants(sigsByConstantName, maxNum, constantCollector, _this.parent);
         });
         return maxNum;
     };
@@ -152,19 +192,19 @@ var Cell = /** @class */ (function () {
         this.inputPorts.forEach(function (port) {
             var isLateral = port.keyIn(lateralPids);
             if (isLateral || (template[1]['s:type'] === 'generic' && genericsLaterals)) {
-                FlatModule_1.addToDefaultDict(lateralsByNet, port.valString(), port);
+                (0, FlatModule_1.addToDefaultDict)(lateralsByNet, port.valString(), port);
             }
             else {
-                FlatModule_1.addToDefaultDict(ridersByNet, port.valString(), port);
+                (0, FlatModule_1.addToDefaultDict)(ridersByNet, port.valString(), port);
             }
         });
         this.outputPorts.forEach(function (port) {
             var isLateral = port.keyIn(lateralPids);
             if (isLateral || (template[1]['s:type'] === 'generic' && genericsLaterals)) {
-                FlatModule_1.addToDefaultDict(lateralsByNet, port.valString(), port);
+                (0, FlatModule_1.addToDefaultDict)(lateralsByNet, port.valString(), port);
             }
             else {
-                FlatModule_1.addToDefaultDict(driversByNet, port.valString(), port);
+                (0, FlatModule_1.addToDefaultDict)(driversByNet, port.valString(), port);
             }
         });
     };
@@ -175,7 +215,7 @@ var Cell = /** @class */ (function () {
         return null;
     };
     Cell.prototype.getTemplate = function () {
-        return Skin_1.default.findSkinType(this.type);
+        return Skin_1.default.findSkinType(this.type, this.depth);
     };
     Cell.prototype.buildElkChild = function () {
         var _this = this;
@@ -209,13 +249,19 @@ var Cell = /** @class */ (function () {
                 return op.getGenericElkPort(i, outTemplates_1, 'out');
             });
             var cell = {
-                id: this.key,
+                id: this.parent + '.' + this.key,
                 width: Number(template[1]['s:width']),
                 height: Number(this.getGenericHeight()),
                 ports: inPorts.concat(outPorts),
                 layoutOptions: layoutAttrs,
                 labels: [],
             };
+            if (type === 'split') {
+                cell.ports[0].y = cell.height / 2;
+            }
+            if (type === 'join') {
+                cell.ports[cell.ports.length - 1].y = cell.height / 2;
+            }
             if (fixedPosX) {
                 cell.x = fixedPosX;
             }
@@ -225,9 +271,105 @@ var Cell = /** @class */ (function () {
             this.addLabels(template, cell);
             return cell;
         }
+        if (type === 'sub_odd' || type === 'sub_even') {
+            var inTemplates_2 = Skin_1.default.getPortsWithPrefix(template, 'in');
+            var outTemplates_2 = Skin_1.default.getPortsWithPrefix(template, 'out');
+            var inPorts_1 = this.inputPorts.map(function (ip, i) {
+                return ip.getGenericElkPort(i, inTemplates_2, 'in');
+            });
+            var outPorts = this.outputPorts.map(function (op, i) {
+                return op.getGenericElkPort(i, outTemplates_2, 'out');
+            });
+            var elk = (0, elkGraph_1.buildElkGraph)(this.subModule);
+            var cell_1 = {
+                id: this.parent + '.' + this.key,
+                layoutOptions: { 'org.eclipse.elk.portConstraints': 'FIXED_SIDE' },
+                labels: [],
+                ports: inPorts_1.concat(outPorts),
+                children: [],
+                edges: [],
+            };
+            _.forEach(elk.children, function (child) {
+                var inc = true;
+                _.forEach(cell_1.ports, function (port) {
+                    if (_this.parent + '.' + child.id === port.id) {
+                        inc = false;
+                    }
+                });
+                if (inc) {
+                    cell_1.children.push(child);
+                }
+            });
+            _.forEach(elk.edges, function (edge) {
+                var edgeAdd = edge;
+                _.forEach(cell_1.ports, function (port) {
+                    if (_.includes(inPorts_1, port)) {
+                        if (edgeAdd.sourcePort === port.id.slice(_this.parent.length + 1) + '.Y') {
+                            var source = port.id.split('.');
+                            source.pop();
+                            edgeAdd.source = source.join('.');
+                            edgeAdd.sourcePort = port.id;
+                        }
+                    }
+                    else {
+                        if (edgeAdd.targetPort === port.id.slice(_this.parent.length + 1) + '.A') {
+                            var target = port.id.split('.');
+                            target.pop();
+                            edgeAdd.target = target.join('.');
+                            edgeAdd.targetPort = port.id;
+                        }
+                    }
+                });
+                if (edgeAdd.source === edgeAdd.target) {
+                    var dummyId = _this.subModule.moduleName + '.$d_' + edgeAdd.sourcePort + '_' + edgeAdd.targetPort;
+                    var dummy = {
+                        id: dummyId,
+                        width: 0,
+                        height: 0,
+                        ports: [
+                            {
+                                id: dummyId + '.pin',
+                                width: 0,
+                                height: 0,
+                            },
+                            {
+                                id: dummyId + '.pout',
+                                width: 0,
+                                height: 0,
+                            },
+                        ],
+                        layoutOptions: { 'org.eclipse.elk.portConstraints': 'FIXED_SIDE' },
+                    };
+                    var edgeId = edgeAdd.id;
+                    var edgeAddCopy = __assign({}, edgeAdd);
+                    edgeAdd.target = dummyId;
+                    edgeAdd.targetPort = dummyId + '.pin';
+                    edgeAdd.id = _this.subModule.moduleName + '.e_' + edgeAdd.sourcePort + '_' + edgeAdd.targetPort;
+                    elkGraph_1.ElkModel.wireNameLookup[edgeAdd.id] = elkGraph_1.ElkModel.wireNameLookup[edgeId];
+                    edgeAddCopy.source = dummyId;
+                    edgeAddCopy.sourcePort = dummyId + '.pout';
+                    edgeAddCopy.id = _this.subModule.moduleName + '.e_' + edgeAddCopy.sourcePort +
+                        '_' + edgeAddCopy.targetPort;
+                    elkGraph_1.ElkModel.wireNameLookup[edgeAddCopy.id] = elkGraph_1.ElkModel.wireNameLookup[edgeId];
+                    cell_1.edges.push(edgeAdd, edgeAddCopy);
+                    cell_1.children.push(dummy);
+                }
+                else {
+                    cell_1.edges.push(edgeAdd);
+                }
+            });
+            if (fixedPosX) {
+                cell_1.x = fixedPosX;
+            }
+            if (fixedPosY) {
+                cell_1.y = fixedPosY;
+            }
+            this.addLabels(template, cell_1);
+            return cell_1;
+        }
         var ports = Skin_1.default.getPortsWithPrefix(template, '').map(function (tp) {
             return {
-                id: _this.key + '.' + tp[1]['s:pid'],
+                id: _this.parent + '.' + _this.key + '.' + tp[1]['s:pid'],
                 width: 0,
                 height: 0,
                 x: Number(tp[1]['s:x']),
@@ -236,7 +378,7 @@ var Cell = /** @class */ (function () {
         });
         var nodeWidth = Number(template[1]['s:width']);
         var ret = {
-            id: this.key,
+            id: this.parent + '.' + this.key,
             width: nodeWidth,
             height: Number(template[1]['s:height']),
             ports: ports,
@@ -255,6 +397,7 @@ var Cell = /** @class */ (function () {
     Cell.prototype.render = function (cell) {
         var template = this.getTemplate();
         var tempclone = clone(template);
+        var link = this.getCellLink();
         for (var _i = 0, _a = cell.labels; _i < _a.length; _i++) {
             var label = _a[_i];
             var labelIDSplit = label.id.split('.');
@@ -289,24 +432,24 @@ var Cell = /** @class */ (function () {
         }
         else if (this.type === '$_join_') {
             setGenericSize(tempclone, Number(this.getGenericHeight()));
-            var inPorts_1 = Skin_1.default.getPortsWithPrefix(template, 'in');
-            var gap_2 = Number(inPorts_1[1][1]['s:y']) - Number(inPorts_1[0][1]['s:y']);
-            var startY_2 = Number(inPorts_1[0][1]['s:y']);
+            var inPorts_2 = Skin_1.default.getPortsWithPrefix(template, 'in');
+            var gap_2 = Number(inPorts_2[1][1]['s:y']) - Number(inPorts_2[0][1]['s:y']);
+            var startY_2 = Number(inPorts_2[0][1]['s:y']);
             tempclone.pop();
             tempclone.pop();
             this.inputPorts.forEach(function (port, i) {
-                var portClone = clone(inPorts_1[0]);
+                var portClone = clone(inPorts_2[0]);
                 portClone[portClone.length - 1][2] = port.Key;
-                portClone[1].transform = 'translate(' + inPorts_1[1][1]['s:x'] + ','
+                portClone[1].transform = 'translate(' + inPorts_2[1][1]['s:x'] + ','
                     + (startY_2 + i * gap_2) + ')';
                 tempclone.push(portClone);
             });
         }
         else if (template[1]['s:type'] === 'generic') {
             setGenericSize(tempclone, Number(this.getGenericHeight()));
-            var inPorts_2 = Skin_1.default.getPortsWithPrefix(template, 'in');
-            var ingap_1 = Number(inPorts_2[1][1]['s:y']) - Number(inPorts_2[0][1]['s:y']);
-            var instartY_1 = Number(inPorts_2[0][1]['s:y']);
+            var inPorts_3 = Skin_1.default.getPortsWithPrefix(template, 'in');
+            var ingap_1 = Number(inPorts_3[1][1]['s:y']) - Number(inPorts_3[0][1]['s:y']);
+            var instartY_1 = Number(inPorts_3[0][1]['s:y']);
             var outPorts_2 = Skin_1.default.getPortsWithPrefix(template, 'out');
             var outgap_1 = Number(outPorts_2[1][1]['s:y']) - Number(outPorts_2[0][1]['s:y']);
             var outstartY_1 = Number(outPorts_2[0][1]['s:y']);
@@ -315,9 +458,9 @@ var Cell = /** @class */ (function () {
             tempclone.pop();
             tempclone.pop();
             this.inputPorts.forEach(function (port, i) {
-                var portClone = clone(inPorts_2[0]);
+                var portClone = clone(inPorts_3[0]);
                 portClone[portClone.length - 1][2] = port.Key;
-                portClone[1].transform = 'translate(' + inPorts_2[1][1]['s:x'] + ','
+                portClone[1].transform = 'translate(' + inPorts_3[1][1]['s:x'] + ','
                     + (instartY_1 + i * ingap_1) + ')';
                 portClone[1].id = 'port_' + port.parentNode.Key + '~' + port.Key;
                 tempclone.push(portClone);
@@ -331,10 +474,92 @@ var Cell = /** @class */ (function () {
                 tempclone.push(portClone);
             });
             // first child of generic must be a text node.
-            tempclone[2][2] = this.type;
+            tempclone[2][2] = this.getTypeLabel();
+        }
+        else if (template[1]['s:type'] === 'sub_odd' || template[1]['s:type'] === 'sub_even') {
+            var subModule = (0, drawModule_1.drawSubModule)(cell, this.subModule);
+            if (link === null && this.shouldCreateInternalSubmoduleLink()) {
+                var pageId = FlatModule_1.FlatModule.addDrilldownPage(cell.id, clone(subModule));
+                link = '#' + pageId;
+            }
+            tempclone[3][1].width = subModule[1].width;
+            tempclone[3][1].height = subModule[1].height;
+            tempclone[2][1].x = tempclone[3][1].width / 2;
+            tempclone[2][2] = this.getTypeLabel();
+            tempclone.pop();
+            tempclone.pop();
+            tempclone.pop();
+            tempclone.pop();
+            subModule.shift();
+            subModule.shift();
+            _.forEach(subModule, function (child) { return tempclone.push(child); });
+            var inPorts_4 = Skin_1.default.getPortsWithPrefix(template, 'in');
+            var outPorts_3 = Skin_1.default.getPortsWithPrefix(template, 'out');
+            this.inputPorts.forEach(function (port, i) {
+                var portElk = _.find(cell.ports, function (p) { return p.id === cell.id + '.' + port.Key; });
+                var portClone = clone(inPorts_4[0]);
+                portClone[portClone.length - 1][2] = port.Key;
+                portClone[1].transform = 'translate(' + portElk.x + ','
+                    + portElk.y + ')';
+                portClone[1].id = 'port_' + port.parentNode.Key + '~' + port.Key;
+                tempclone.push(portClone);
+            });
+            this.outputPorts.forEach(function (port, i) {
+                var portElk = _.find(cell.ports, function (p) { return p.id === cell.id + '.' + port.Key; });
+                var portClone = clone(outPorts_3[0]);
+                portClone[portClone.length - 1][2] = port.Key;
+                portClone[1].transform = 'translate(' + portElk.x + ','
+                    + portElk.y + ')';
+                portClone[1].id = 'port_' + port.parentNode.Key + '~' + port.Key;
+                tempclone.push(portClone);
+            });
         }
         setClass(tempclone, '$cell_id', 'cell_' + this.key);
+        if (link !== null) {
+            makeCellBodyClickable(tempclone);
+            return ['a', { 'xlink:href': link }, tempclone];
+        }
         return tempclone;
+    };
+    Cell.prototype.getCellLink = function () {
+        var config = FlatModule_1.FlatModule.config;
+        if (config && config.render && config.render.cellLinks &&
+            this.key in config.render.cellLinks) {
+            return config.render.cellLinks[this.key];
+        }
+        return null;
+    };
+    Cell.prototype.shouldCreateInternalSubmoduleLink = function () {
+        var config = FlatModule_1.FlatModule.config;
+        return !!(config && config.render && config.render.internalSubmoduleLinks === true);
+    };
+    Cell.prototype.getConfiguredCellLabel = function () {
+        var config = FlatModule_1.FlatModule.config;
+        if (config && config.render && config.render.cellLabels &&
+            this.key in config.render.cellLabels) {
+            return config.render.cellLabels[this.key];
+        }
+        return null;
+    };
+    Cell.prototype.getModuleHdlName = function () {
+        var netlist = FlatModule_1.FlatModule.netlist;
+        if (netlist && netlist.modules && netlist.modules[this.type] &&
+            netlist.modules[this.type].attributes &&
+            typeof netlist.modules[this.type].attributes.hdlname === 'string') {
+            return netlist.modules[this.type].attributes.hdlname;
+        }
+        return null;
+    };
+    Cell.prototype.getTypeLabel = function () {
+        var configuredLabel = this.getConfiguredCellLabel();
+        if (configuredLabel !== null) {
+            return configuredLabel;
+        }
+        var config = FlatModule_1.FlatModule.config;
+        if (!config || !config.render || config.render.beautifyLabels) {
+            return (0, labels_1.beautifyCellTypeLabel)(this.type, this.getModuleHdlName());
+        }
+        return this.type;
     };
     Cell.prototype.addLabels = function (template, cell) {
         var _this = this;
@@ -344,14 +569,18 @@ var Cell = /** @class */ (function () {
                     var attrName = node.attr['s:attribute'];
                     var newString = void 0;
                     if (attrName === 'ref' || attrName === 'id') {
-                        if (_this.type === '$_constant_' && _this.key.length > 3) {
+                        var configuredLabel = _this.getConfiguredCellLabel();
+                        if (configuredLabel !== null) {
+                            newString = configuredLabel;
+                        }
+                        else if (_this.type === '$_constant_' && _this.key.length > 3) {
                             var num = parseInt(_this.key, 2);
                             newString = '0x' + num.toString(16);
                         }
                         else {
                             newString = _this.key;
                         }
-                        _this.attributes[attrName] = _this.key;
+                        _this.attributes[attrName] = newString;
                     }
                     else if (attrName in _this.attributes) {
                         newString = _this.attributes[attrName];
@@ -397,6 +626,17 @@ function setGenericSize(tempclone, height) {
         },
     });
 }
+function makeCellBodyClickable(tempclone) {
+    var done = false;
+    onml.traverse(tempclone, {
+        enter: function (node) {
+            if (!done && node.name === 'rect') {
+                node.attr['pointer-events'] = 'all';
+                done = true;
+            }
+        },
+    });
+}
 function setTextAttribute(tempclone, attribute, value) {
     onml.traverse(tempclone, {
         enter: function (node) {
@@ -430,33 +670,204 @@ function getBits(signals, indicesString) {
     }
 }
 
-},{"./FlatModule":2,"./Port":3,"./Skin":4,"./YosysModel":5,"clone":76,"lodash":83,"onml":85}],2:[function(require,module,exports){
+},{"./FlatModule":3,"./Port":4,"./Skin":5,"./YosysModel":6,"./drawModule":7,"./elkGraph":8,"./labels":10,"clone":79,"lodash":89,"onml":91}],2:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.removeDups = exports.addToDefaultDict = exports.arrayToBitstring = exports.FlatModule = void 0;
+exports.normalizeConfig = normalizeConfig;
+function normalizeConfig(config) {
+    var defaultConfig = {
+        hierarchy: {
+            enable: 'off',
+            expandLevel: 0,
+            expandModules: {
+                types: [],
+                ids: [],
+            },
+        },
+        render: {
+            beautifyLabels: true,
+            cellLabels: {},
+            cellLinks: {},
+            internalSubmoduleLinks: false,
+        },
+        top: {
+            enable: false,
+            module: '',
+        },
+    };
+    if (!config) {
+        return defaultConfig;
+    }
+    return {
+        hierarchy: {
+            enable: config.hierarchy && config.hierarchy.enable || defaultConfig.hierarchy.enable,
+            expandLevel: config.hierarchy && config.hierarchy.expandLevel || defaultConfig.hierarchy.expandLevel,
+            expandModules: {
+                types: config.hierarchy && config.hierarchy.expandModules &&
+                    config.hierarchy.expandModules.types || defaultConfig.hierarchy.expandModules.types,
+                ids: config.hierarchy && config.hierarchy.expandModules &&
+                    config.hierarchy.expandModules.ids || defaultConfig.hierarchy.expandModules.ids,
+            },
+        },
+        render: {
+            beautifyLabels: config.render && config.render.beautifyLabels !== undefined ?
+                config.render.beautifyLabels : defaultConfig.render.beautifyLabels,
+            cellLabels: config.render && config.render.cellLabels || defaultConfig.render.cellLabels,
+            cellLinks: config.render && config.render.cellLinks || defaultConfig.render.cellLinks,
+            internalSubmoduleLinks: config.render && config.render.internalSubmoduleLinks !== undefined ?
+                config.render.internalSubmoduleLinks : defaultConfig.render.internalSubmoduleLinks,
+        },
+        top: {
+            enable: config.top && config.top.enable || defaultConfig.top.enable,
+            module: config.top && config.top.module || defaultConfig.top.module,
+        },
+    };
+}
+
+},{}],3:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.FlatModule = void 0;
+exports.arrayToBitstring = arrayToBitstring;
+exports.addToDefaultDict = addToDefaultDict;
+exports.removeDups = removeDups;
+var ConfigModel_1 = require("./ConfigModel");
 var Skin_1 = require("./Skin");
 var Cell_1 = require("./Cell");
 var _ = require("lodash");
 var FlatModule = /** @class */ (function () {
-    function FlatModule(netlist) {
+    function FlatModule(mod, name, depth, parent) {
+        if (parent === void 0) { parent = null; }
         var _this = this;
-        this.moduleName = null;
-        _.forEach(netlist.modules, function (mod, name) {
-            if (mod.attributes && Number(mod.attributes.top) === 1) {
-                _this.moduleName = name;
+        this.parent = parent;
+        this.moduleName = name;
+        var ports = _.map(mod.ports, function (port, portName) { return Cell_1.default.fromPort(port, portName, _this.moduleName); });
+        var cells = _.map(mod.cells, function (c, key) {
+            switch (FlatModule.config.hierarchy.enable) {
+                case 'level': {
+                    if (FlatModule.config.hierarchy.expandLevel > depth) {
+                        if (_.includes(FlatModule.modNames, c.type)) {
+                            return Cell_1.default.createSubModule(c, key, _this.moduleName, FlatModule.netlist.modules[c.type], depth);
+                        }
+                        else {
+                            return Cell_1.default.fromYosysCell(c, key, _this.moduleName);
+                        }
+                    }
+                    else {
+                        return Cell_1.default.fromYosysCell(c, key, _this.moduleName);
+                    }
+                }
+                case 'all': {
+                    if (_.includes(FlatModule.modNames, c.type)) {
+                        return Cell_1.default.createSubModule(c, key, _this.moduleName, FlatModule.netlist.modules[c.type], depth);
+                    }
+                    else {
+                        return Cell_1.default.fromYosysCell(c, key, _this.moduleName);
+                    }
+                }
+                case 'modules': {
+                    if (_.includes(FlatModule.config.hierarchy.expandModules.types, c.type) ||
+                        _.includes(FlatModule.config.hierarchy.expandModules.ids, key)) {
+                        if (!_.includes(FlatModule.modNames, c.type)) {
+                            throw new Error('Submodule in config file not defined in input json file.');
+                        }
+                        return Cell_1.default.createSubModule(c, key, _this.moduleName, FlatModule.netlist.modules[c.type], depth);
+                    }
+                    else {
+                        return Cell_1.default.fromYosysCell(c, key, _this.moduleName);
+                    }
+                }
+                default: {
+                    return Cell_1.default.fromYosysCell(c, key, _this.moduleName);
+                }
             }
         });
-        // Otherwise default the first one in the file...
-        if (this.moduleName == null) {
-            this.moduleName = Object.keys(netlist.modules)[0];
-        }
-        var top = netlist.modules[this.moduleName];
-        var ports = _.map(top.ports, Cell_1.default.fromPort);
-        var cells = _.map(top.cells, function (c, key) { return Cell_1.default.fromYosysCell(c, key); });
         this.nodes = cells.concat(ports);
-        // populated by createWires
-        this.wires = [];
+        // this can be skipped if there are no 0's or 1's
+        if (FlatModule.layoutProps.constants !== false) {
+            this.addConstants();
+        }
+        // this can be skipped if there are no splits or joins
+        if (FlatModule.layoutProps.splitsAndJoins !== false) {
+            this.addSplitsJoins();
+        }
+        this.createWires();
     }
+    FlatModule.fromNetlist = function (netlist, config) {
+        this.layoutProps = Skin_1.default.getProperties();
+        this.modNames = Object.keys(netlist.modules);
+        this.netlist = netlist;
+        this.config = (0, ConfigModel_1.normalizeConfig)(config);
+        this.resetDrilldownPages();
+        var topName = null;
+        if (this.config.top.enable) {
+            topName = this.config.top.module;
+            if (!_.includes(this.modNames, topName)) {
+                throw new Error('Top module in config file not defined in input json file.');
+            }
+        }
+        else {
+            _.forEach(netlist.modules, function (mod, name) {
+                if (mod.attributes && Number(mod.attributes.top) === 1) {
+                    topName = name;
+                }
+            });
+            // Otherwise default the first one in the file...
+            if (topName == null) {
+                topName = this.modNames[0];
+            }
+        }
+        var top = netlist.modules[topName];
+        return new FlatModule(top, topName, 0);
+    };
+    FlatModule.resetDrilldownPages = function () {
+        this.drilldownPages = [];
+        this.drilldownPageIds = {};
+        this.drilldownPagesByCellId = {};
+    };
+    FlatModule.addDrilldownPage = function (rawId, svg) {
+        if (this.drilldownPagesByCellId[rawId]) {
+            return this.drilldownPagesByCellId[rawId];
+        }
+        var base = 'netlistsvg_page_' + rawId.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+        var id = base || 'netlistsvg_page_submodule';
+        var suffix = 2;
+        while (this.drilldownPageIds[id]) {
+            id = base + '_' + suffix;
+            suffix += 1;
+        }
+        this.drilldownPageIds[id] = true;
+        this.drilldownPagesByCellId[rawId] = id;
+        this.drilldownPages.push({ id: id, cellId: rawId, svg: svg });
+        return id;
+    };
+    FlatModule.setDrilldownPageSvg = function (cellId, svg) {
+        var pageId = this.drilldownPagesByCellId[cellId];
+        if (!pageId) {
+            return;
+        }
+        for (var _i = 0, _a = this.drilldownPages; _i < _a.length; _i++) {
+            var page = _a[_i];
+            if (page.id === pageId) {
+                page.svg = svg;
+                return;
+            }
+        }
+    };
+    FlatModule.walkSubModuleCells = function (top) {
+        var out = [];
+        var visit = function (mod) {
+            for (var _i = 0, _a = mod.nodes; _i < _a.length; _i++) {
+                var node = _a[_i];
+                if (node.subModule) {
+                    out.push(node);
+                    visit(node.subModule);
+                }
+            }
+        };
+        visit(top);
+        return out;
+    };
     // converts input ports with constant assignments to constant nodes
     FlatModule.prototype.addConstants = function () {
         // find the maximum signal number
@@ -471,6 +882,7 @@ var FlatModule = /** @class */ (function () {
     };
     // solves for minimal bus splits and joins and adds them to module
     FlatModule.prototype.addSplitsJoins = function () {
+        var _this = this;
         var allInputs = _.flatMap(this.nodes, function (n) { return n.inputPortVals(); });
         var allOutputs = _.flatMap(this.nodes, function (n) { return n.outputPortVals(); });
         var allInputsCopy = allInputs.slice();
@@ -480,19 +892,18 @@ var FlatModule = /** @class */ (function () {
             gather(allOutputs, allInputsCopy, input, 0, input.length, splits, joins);
         });
         this.nodes = this.nodes.concat(_.map(joins, function (joinOutput, joinInputs) {
-            return Cell_1.default.fromJoinInfo(joinInputs, joinOutput);
+            return Cell_1.default.fromJoinInfo(joinInputs, joinOutput, _this.moduleName);
         })).concat(_.map(splits, function (splitOutputs, splitInput) {
-            return Cell_1.default.fromSplitInfo(splitInput, splitOutputs);
+            return Cell_1.default.fromSplitInfo(splitInput, splitOutputs, _this.moduleName);
         }));
     };
     // search through all the ports to find all of the wires
     FlatModule.prototype.createWires = function () {
-        var layoutProps = Skin_1.default.getProperties();
         var ridersByNet = {};
         var driversByNet = {};
         var lateralsByNet = {};
         this.nodes.forEach(function (n) {
-            n.collectPortsByDirection(ridersByNet, driversByNet, lateralsByNet, layoutProps.genericsLaterals);
+            n.collectPortsByDirection(ridersByNet, driversByNet, lateralsByNet, FlatModule.layoutProps.genericsLaterals);
         });
         // list of unique nets
         var nets = removeDups(_.keys(ridersByNet).concat(_.keys(driversByNet)).concat(_.keys(lateralsByNet)));
@@ -508,6 +919,9 @@ var FlatModule = /** @class */ (function () {
         });
         this.wires = wires;
     };
+    FlatModule.drilldownPages = [];
+    FlatModule.drilldownPageIds = {};
+    FlatModule.drilldownPagesByCellId = {};
     return FlatModule;
 }());
 exports.FlatModule = FlatModule;
@@ -526,7 +940,6 @@ function arrayToBitstring(bitArray) {
     });
     return ',' + ret + ',';
 }
-exports.arrayToBitstring = arrayToBitstring;
 // returns whether needle is a substring of haystack
 function arrayContains(needle, haystack) {
     return (haystack.indexOf(needle) > -1);
@@ -546,7 +959,6 @@ function addToDefaultDict(dict, key, value) {
         dict[key].push(value);
     }
 }
-exports.addToDefaultDict = addToDefaultDict;
 // string (for labels), that represents an index
 // or range of indices.
 function getIndicesString(bitstring, query, start) {
@@ -619,9 +1031,8 @@ function removeDups(inStrs) {
     });
     return _.keys(map);
 }
-exports.removeDups = removeDups;
 
-},{"./Cell":1,"./Skin":4,"lodash":83}],3:[function(require,module,exports){
+},{"./Cell":1,"./ConfigModel":2,"./Skin":5,"lodash":89}],4:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Port = void 0;
@@ -648,14 +1059,14 @@ var Port = /** @class */ (function () {
     Port.prototype.valString = function () {
         return ',' + this.value.join() + ',';
     };
-    Port.prototype.findConstants = function (sigsByConstantName, maxNum, constantCollector) {
+    Port.prototype.findConstants = function (sigsByConstantName, maxNum, constantCollector, parent) {
         var _this = this;
         var constNameCollector = '';
         var constNumCollector = [];
         var portSigs = this.value;
         portSigs.forEach(function (portSig, portSigIndex) {
             // is constant?
-            if (portSig === '0' || portSig === '1') {
+            if (portSig === '0' || portSig === '1' || portSig === 'x') {
                 maxNum += 1;
                 constNameCollector += portSig;
                 // replace the constant with new signal num
@@ -664,19 +1075,19 @@ var Port = /** @class */ (function () {
                 // string of constants ended before end of p.value
             }
             else if (constNumCollector.length > 0) {
-                _this.assignConstant(constNameCollector, constNumCollector, portSigIndex, sigsByConstantName, constantCollector);
+                _this.assignConstant(constNameCollector, constNumCollector, portSigIndex, sigsByConstantName, constantCollector, parent);
                 // reset name and num collectors
                 constNameCollector = '';
                 constNumCollector = [];
             }
         });
         if (constNumCollector.length > 0) {
-            this.assignConstant(constNameCollector, constNumCollector, portSigs.length, sigsByConstantName, constantCollector);
+            this.assignConstant(constNameCollector, constNumCollector, portSigs.length, sigsByConstantName, constantCollector, parent);
         }
         return maxNum;
     };
     Port.prototype.getGenericElkPort = function (index, templatePorts, dir) {
-        var nkey = this.parentNode.Key;
+        var nkey = this.parentNode.parent + '.' + this.parentNode.Key;
         var type = this.parentNode.getTemplate()[1]['s:type'];
         if (index === 0) {
             var ret = {
@@ -686,7 +1097,7 @@ var Port = /** @class */ (function () {
                 x: Number(templatePorts[0][1]['s:x']),
                 y: Number(templatePorts[0][1]['s:y']),
             };
-            if ((type === 'generic' || type === 'join') && dir === 'in') {
+            if ((type === 'generic' || type === 'sub_even' || type === 'sub_odd' || type === 'join') && dir === 'in') {
                 ret.labels = [{
                         id: nkey + '.' + this.key + '.label',
                         text: this.key,
@@ -695,8 +1106,12 @@ var Port = /** @class */ (function () {
                         width: (6 * this.key.length),
                         height: 11,
                     }];
+                if (type === 'sub_even' || type === 'sub_odd') {
+                    ret.layoutOptions = { 'org.eclipse.elk.port.side': 'WEST' };
+                }
             }
-            if ((type === 'generic' || type === 'split') && dir === 'out') {
+            if ((type === 'generic' || type === 'sub_even' || type === 'sub_odd' || type === 'split')
+                && dir === 'out') {
                 ret.labels = [{
                         id: nkey + '.' + this.key + '.label',
                         text: this.key,
@@ -705,6 +1120,13 @@ var Port = /** @class */ (function () {
                         width: (6 * this.key.length),
                         height: 11,
                     }];
+                if (type === 'sub_even' || type === 'sub_odd') {
+                    ret.layoutOptions = { 'org.eclipse.elk.port.side': 'EAST' };
+                }
+            }
+            if (type === 'sub_even' || type === 'sub_odd') {
+                delete ret.x;
+                delete ret.y;
             }
             return ret;
         }
@@ -717,7 +1139,7 @@ var Port = /** @class */ (function () {
                 x: Number(templatePorts[0][1]['s:x']),
                 y: (index) * gap + Number(templatePorts[0][1]['s:y']),
             };
-            if (type === 'generic') {
+            if (type === 'generic' || type === 'sub_even' || type === 'sub_odd') {
                 ret.labels = [{
                         id: nkey + '.' + this.key + '.label',
                         text: this.key,
@@ -726,11 +1148,21 @@ var Port = /** @class */ (function () {
                         width: (6 * this.key.length),
                         height: 11,
                     }];
+                if (dir === 'in') {
+                    ret.layoutOptions = { 'org.eclipse.elk.port.side': 'WEST' };
+                }
+                if (dir === 'out') {
+                    ret.layoutOptions = { 'org.eclipse.elk.port.side': 'EAST' };
+                }
+            }
+            if (type === 'sub_even' || type === 'sub_odd') {
+                delete ret.x;
+                delete ret.y;
             }
             return ret;
         }
     };
-    Port.prototype.assignConstant = function (nameCollector, constants, currIndex, signalsByConstantName, constantCollector) {
+    Port.prototype.assignConstant = function (nameCollector, constants, currIndex, signalsByConstantName, constantCollector, parent) {
         var _this = this;
         // we've been appending to nameCollector, so reverse to get const name
         var constName = nameCollector.split('').reverse().join('');
@@ -746,7 +1178,7 @@ var Port = /** @class */ (function () {
             });
         }
         else {
-            constantCollector.push(Cell_1.default.fromConstantInfo(constName, constants));
+            constantCollector.push(Cell_1.default.fromConstantInfo(constName, constants, parent));
             signalsByConstantName[constName] = constants;
         }
     };
@@ -754,7 +1186,7 @@ var Port = /** @class */ (function () {
 }());
 exports.Port = Port;
 
-},{"./Cell":1,"lodash":83}],4:[function(require,module,exports){
+},{"./Cell":1,"lodash":89}],5:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Skin = void 0;
@@ -821,7 +1253,8 @@ var Skin;
         });
     }
     Skin.getLateralPortPids = getLateralPortPids;
-    function findSkinType(type) {
+    function findSkinType(type, depth) {
+        if (depth === void 0) { depth = null; }
         var ret = null;
         onml.traverse(Skin.skin, {
             enter: function (node, parent) {
@@ -831,13 +1264,25 @@ var Skin;
             },
         });
         if (ret == null) {
-            onml.traverse(Skin.skin, {
-                enter: function (node) {
-                    if (node.attr['s:type'] === 'generic') {
-                        ret = node;
-                    }
-                },
-            });
+            if (depth == null) {
+                onml.traverse(Skin.skin, {
+                    enter: function (node) {
+                        if (node.attr['s:type'] === 'generic') {
+                            ret = node;
+                        }
+                    },
+                });
+            }
+            else {
+                var sub_1 = ['sub_odd', 'sub_even'];
+                onml.traverse(Skin.skin, {
+                    enter: function (node) {
+                        if (node.attr['s:type'] === sub_1[depth % 2]) {
+                            ret = node;
+                        }
+                    },
+                });
+            }
         }
         return ret.full;
     }
@@ -883,10 +1328,10 @@ var Skin;
         return vals;
     }
     Skin.getProperties = getProperties;
-})(Skin = exports.Skin || (exports.Skin = {}));
+})(Skin || (exports.Skin = Skin = {}));
 exports.default = Skin;
 
-},{"lodash":83,"onml":85}],5:[function(require,module,exports){
+},{"lodash":89,"onml":91}],6:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var Yosys;
@@ -928,18 +1373,24 @@ var Yosys;
 })(Yosys || (Yosys = {}));
 exports.default = Yosys;
 
-},{}],6:[function(require,module,exports){
+},{}],7:[function(require,module,exports){
 "use strict";
-var __spreadArrays = (this && this.__spreadArrays) || function () {
-    for (var s = 0, i = 0, il = arguments.length; i < il; i++) s += arguments[i].length;
-    for (var r = Array(s), k = 0, i = 0; i < il; i++)
-        for (var a = arguments[i], j = 0, jl = a.length; j < jl; j++, k++)
-            r[k] = a[j];
-    return r;
+var __spreadArray = (this && this.__spreadArray) || function (to, from, pack) {
+    if (pack || arguments.length === 2) for (var i = 0, l = from.length, ar; i < l; i++) {
+        if (ar || !(i in from)) {
+            if (!ar) ar = Array.prototype.slice.call(from, 0, i);
+            ar[i] = from[i];
+        }
+    }
+    return to.concat(ar || Array.prototype.slice.call(from));
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.removeDummyEdges = void 0;
+exports.default = drawModule;
+exports.drawFlatModuleInner = drawFlatModuleInner;
+exports.drawSubModule = drawSubModule;
+exports.removeDummyEdges = removeDummyEdges;
 var elkGraph_1 = require("./elkGraph");
+var FlatModule_1 = require("./FlatModule");
 var Skin_1 = require("./Skin");
 var _ = require("lodash");
 var onml = require("onml");
@@ -951,8 +1402,24 @@ var WireDirection;
     WireDirection[WireDirection["Right"] = 3] = "Right";
 })(WireDirection || (WireDirection = {}));
 function drawModule(g, module) {
+    var _a = renderFlatModule(g, module), elements = _a.elements, svgAttrs = _a.svgAttrs;
+    var hasDrilldownPages = FlatModule_1.FlatModule.drilldownPages.length > 0;
+    if (FlatModule_1.FlatModule.config.render &&
+        (!_.isEmpty(FlatModule_1.FlatModule.config.render.cellLinks) || hasDrilldownPages)) {
+        svgAttrs['xmlns:xlink'] = svgAttrs['xmlns:xlink'] || 'http://www.w3.org/1999/xlink';
+    }
+    var styles = getSkinStyles();
+    var ret = hasDrilldownPages ? __spreadArray(__spreadArray(['svg', svgAttrs, styles, getDrilldownPageStyles()], FlatModule_1.FlatModule.drilldownPages.map(drilldownPageToSvg), true), [createSvgPage('netlistsvg_page_top', 'netlistsvg-page-default', g.width, g.height, elements)], false) : __spreadArray(['svg', svgAttrs, styles], elements, true);
+    return onml.s(ret);
+}
+function drawFlatModuleInner(g, module) {
+    var _a = renderFlatModule(g, module), elements = _a.elements, svgAttrs = _a.svgAttrs;
+    var styles = getSkinStyles();
+    return __spreadArray(['svg', svgAttrs, styles], elements, true);
+}
+function renderFlatModule(g, module) {
     var nodes = module.nodes.map(function (n) {
-        var kchild = _.find(g.children, function (c) { return c.id === n.Key; });
+        var kchild = _.find(g.children, function (c) { return c.id === n.parent + '.' + n.Key; });
         return n.render(kchild);
     });
     removeDummyEdges(g);
@@ -1042,9 +1509,12 @@ function drawModule(g, module) {
     if (labels !== undefined && labels.length > 0) {
         lines = lines.concat(labels);
     }
-    var svgAttrs = Skin_1.default.skin[1];
+    var svgAttrs = _.assign({}, Skin_1.default.skin[1]);
     svgAttrs.width = g.width.toString();
     svgAttrs.height = g.height.toString();
+    return { elements: __spreadArray(__spreadArray([], nodes, true), lines, true), svgAttrs: svgAttrs };
+}
+function getSkinStyles() {
     var styles = ['style', {}, ''];
     onml.t(Skin_1.default.skin, {
         enter: function (node) {
@@ -1053,11 +1523,87 @@ function drawModule(g, module) {
             }
         },
     });
-    var elements = __spreadArrays([styles], nodes, lines);
-    var ret = __spreadArrays(['svg', svgAttrs], elements);
-    return onml.s(ret);
+    return styles;
 }
-exports.default = drawModule;
+function getDrilldownPageStyles() {
+    return ['style', {}, [
+            '.netlistsvg-page { display: none; }',
+            '.netlistsvg-page-default { display: inline; }',
+            '.netlistsvg-page:target { display: inline; }',
+            '.netlistsvg-page:target ~ .netlistsvg-page-default { display: none; }',
+        ].join('\n')];
+}
+function createSvgPage(id, className, width, height, elements) {
+    return __spreadArray(['svg', {
+            id: id,
+            class: className,
+            width: '100%',
+            height: '100%',
+            viewBox: '0 0 ' + width.toString() + ' ' + height.toString(),
+            preserveAspectRatio: 'xMidYMid meet',
+        }], elements, true);
+}
+function drilldownPageToSvg(page) {
+    var attrs = page.svg[1];
+    var width = attrs.width || 1;
+    var height = attrs.height || 1;
+    return createSvgPage(page.id, 'netlistsvg-page', width, height, page.svg.slice(2));
+}
+function drawSubModule(c, subModule) {
+    var nodes = [];
+    _.forEach(subModule.nodes, function (n) {
+        var kchild = _.find(c.children, function (child) { return child.id === n.parent + '.' + n.Key; });
+        if (kchild) {
+            nodes.push(n.render(kchild));
+        }
+    });
+    removeDummyEdges(c);
+    var lines = _.flatMap(c.edges, function (e) {
+        var netId = elkGraph_1.ElkModel.wireNameLookup[e.id];
+        var netName = 'net_' + netId.slice(1, netId.length - 1);
+        return _.flatMap(e.sections, function (s) {
+            var startPoint = s.startPoint;
+            s.bendPoints = s.bendPoints || [];
+            var bends = s.bendPoints.map(function (b) {
+                var l = ['line', {
+                        x1: startPoint.x,
+                        x2: b.x,
+                        y1: startPoint.y,
+                        y2: b.y,
+                        class: netName,
+                    }];
+                startPoint = b;
+                return l;
+            });
+            if (e.junctionPoints) {
+                var circles = e.junctionPoints.map(function (j) {
+                    return ['circle', {
+                            cx: j.x,
+                            cy: j.y,
+                            r: 2,
+                            style: 'fill:#000',
+                            class: netName,
+                        }];
+                });
+                bends = bends.concat(circles);
+            }
+            var line = [['line', {
+                        x1: startPoint.x,
+                        x2: s.endPoint.x,
+                        y1: startPoint.y,
+                        y2: s.endPoint.y,
+                        class: netName,
+                    }]];
+            return bends.concat(line);
+        });
+    });
+    var svgAttrs = _.assign({}, Skin_1.default.skin[1]);
+    svgAttrs.width = c.width.toString();
+    svgAttrs.height = c.height.toString();
+    var elements = __spreadArray(__spreadArray([], nodes, true), lines, true);
+    var ret = __spreadArray(['svg', svgAttrs], elements, true);
+    return ret;
+}
 function which_dir(start, end) {
     if (end.x === start.x && end.y === start.y) {
         throw new Error('start and end are the same');
@@ -1080,6 +1626,10 @@ function which_dir(start, end) {
     throw new Error('unexpected direction');
 }
 function findBendNearDummy(net, dummyIsSource, dummyLoc) {
+    var junctions = _.flatMap(net, function (edge) { return edge.junctionPoints || []; });
+    if (junctions.length > 0) {
+        return nearestPoint(junctions, dummyLoc);
+    }
     var candidates = net.map(function (edge) {
         var bends = edge.sections[0].bendPoints || [null];
         if (dummyIsSource) {
@@ -1089,18 +1639,36 @@ function findBendNearDummy(net, dummyIsSource, dummyLoc) {
             return _.last(bends);
         }
     }).filter(function (p) { return p !== null; });
-    return _.minBy(candidates, function (pt) {
+    if (candidates.length === 0) {
+        return dummyLoc;
+    }
+    return nearestPoint(candidates, dummyLoc);
+}
+function nearestPoint(points, dummyLoc) {
+    return _.minBy(points, function (pt) {
         return Math.abs(dummyLoc.x - pt.x) + Math.abs(dummyLoc.y - pt.y);
     });
 }
 function removeDummyEdges(g) {
+    if (!g.edges) {
+        return;
+    }
     // go through each edge group for each dummy
     var dummyNum = 0;
     var _loop_1 = function () {
-        var dummyId = '$d_' + String(dummyNum);
+        var dummyIdSuffix = '$d_' + String(dummyNum);
+        var dummyId = null;
         // find all edges connected to this dummy
         var edgeGroup = _.filter(g.edges, function (e) {
-            return e.source === dummyId || e.target === dummyId;
+            if (isDummyId(e.source, dummyIdSuffix)) {
+                dummyId = e.source;
+                return true;
+            }
+            if (isDummyId(e.target, dummyIdSuffix)) {
+                dummyId = e.target;
+                return true;
+            }
+            return false;
         });
         if (edgeGroup.length === 0) {
             return "break";
@@ -1181,19 +1749,23 @@ function removeDummyEdges(g) {
             break;
     }
 }
-exports.removeDummyEdges = removeDummyEdges;
+function isDummyId(id, dummyIdSuffix) {
+    var prefixedSuffix = '.' + dummyIdSuffix;
+    return id === dummyIdSuffix || id.slice(-prefixedSuffix.length) === prefixedSuffix;
+}
 
-},{"./Skin":4,"./elkGraph":7,"lodash":83,"onml":85}],7:[function(require,module,exports){
+},{"./FlatModule":3,"./Skin":5,"./elkGraph":8,"lodash":89,"onml":91}],8:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.buildElkGraph = exports.ElkModel = void 0;
+exports.ElkModel = void 0;
+exports.buildElkGraph = buildElkGraph;
 var _ = require("lodash");
 var ElkModel;
 (function (ElkModel) {
     ElkModel.wireNameLookup = {};
     ElkModel.dummyNum = 0;
     ElkModel.edgeIndex = 0;
-})(ElkModel = exports.ElkModel || (exports.ElkModel = {}));
+})(ElkModel || (exports.ElkModel = ElkModel = {}));
 function buildElkGraph(module) {
     var children = module.nodes.map(function (n) {
         return n.buildElkChild();
@@ -1205,29 +1777,29 @@ function buildElkGraph(module) {
         // at least one driver and at least one rider and no laterals
         if (w.drivers.length > 0 && w.riders.length > 0 && w.laterals.length === 0) {
             var ret = [];
-            route(w.drivers, w.riders, ret, numWires);
+            route(w.drivers, w.riders, ret, numWires, module.moduleName);
             return ret;
             // at least one driver or rider and at least one lateral
         }
         else if (w.drivers.concat(w.riders).length > 0 && w.laterals.length > 0) {
             var ret = [];
-            route(w.drivers, w.laterals, ret, numWires);
-            route(w.laterals, w.riders, ret, numWires);
+            route(w.drivers, w.laterals, ret, numWires, module.moduleName);
+            route(w.laterals, w.riders, ret, numWires, module.moduleName);
             return ret;
             // at least two drivers and no riders
         }
         else if (w.riders.length === 0 && w.drivers.length > 1) {
             // create a dummy node and add it to children
-            var dummyId_1 = addDummy(children);
+            var dummyId_1 = addDummy(children, module.moduleName);
             ElkModel.dummyNum += 1;
             var dummyEdges = w.drivers.map(function (driver) {
                 var sourceParentKey = driver.parentNode.Key;
-                var id = 'e' + String(ElkModel.edgeIndex);
+                var id = module.moduleName + '.e' + String(ElkModel.edgeIndex);
                 ElkModel.edgeIndex += 1;
                 var d = {
                     id: id,
-                    source: sourceParentKey,
-                    sourcePort: sourceParentKey + '.' + driver.key,
+                    source: module.moduleName + '.' + sourceParentKey,
+                    sourcePort: module.moduleName + '.' + sourceParentKey + '.' + driver.key,
                     target: dummyId_1,
                     targetPort: dummyId_1 + '.p',
                 };
@@ -1239,18 +1811,18 @@ function buildElkGraph(module) {
         }
         else if (w.riders.length > 1 && w.drivers.length === 0) {
             // create a dummy node and add it to children
-            var dummyId_2 = addDummy(children);
+            var dummyId_2 = addDummy(children, module.moduleName);
             ElkModel.dummyNum += 1;
             var dummyEdges = w.riders.map(function (rider) {
                 var sourceParentKey = rider.parentNode.Key;
-                var id = 'e' + String(ElkModel.edgeIndex);
+                var id = module.moduleName + '.e' + String(ElkModel.edgeIndex);
                 ElkModel.edgeIndex += 1;
                 var edge = {
                     id: id,
                     source: dummyId_2,
                     sourcePort: dummyId_2 + '.p',
-                    target: sourceParentKey,
-                    targetPort: sourceParentKey + '.' + rider.key,
+                    target: module.moduleName + '.' + sourceParentKey,
+                    targetPort: module.moduleName + '.' + sourceParentKey + '.' + rider.key,
                 };
                 ElkModel.wireNameLookup[id] = rider.wire.netName;
                 return edge;
@@ -1262,14 +1834,14 @@ function buildElkGraph(module) {
             var sourceParentKey_1 = source_1.parentNode.Key;
             var lateralEdges = w.laterals.slice(1).map(function (lateral) {
                 var lateralParentKey = lateral.parentNode.Key;
-                var id = 'e' + String(ElkModel.edgeIndex);
+                var id = module.moduleName + '.e' + String(ElkModel.edgeIndex);
                 ElkModel.edgeIndex += 1;
                 var edge = {
                     id: id,
-                    source: sourceParentKey_1,
-                    sourcePort: sourceParentKey_1 + '.' + source_1.key,
-                    target: lateralParentKey,
-                    targetPort: lateralParentKey + '.' + lateral.key,
+                    source: module.moduleName + '.' + sourceParentKey_1,
+                    sourcePort: module.moduleName + '.' + sourceParentKey_1 + '.' + source_1.key,
+                    target: module.moduleName + '.' + lateralParentKey,
+                    targetPort: module.moduleName + '.' + lateralParentKey + '.' + lateral.key,
                 };
                 ElkModel.wireNameLookup[id] = lateral.wire.netName;
                 return edge;
@@ -1285,9 +1857,8 @@ function buildElkGraph(module) {
         edges: edges,
     };
 }
-exports.buildElkGraph = buildElkGraph;
-function addDummy(children) {
-    var dummyId = '$d_' + String(ElkModel.dummyNum);
+function addDummy(children, moduleName) {
+    var dummyId = moduleName + '.$d_' + String(ElkModel.dummyNum);
     var child = {
         id: dummyId,
         width: 0,
@@ -1302,10 +1873,10 @@ function addDummy(children) {
     children.push(child);
     return dummyId;
 }
-function route(sourcePorts, targetPorts, edges, numWires) {
+function route(sourcePorts, targetPorts, edges, numWires, moduleName) {
     var newEdges = (_.flatMap(sourcePorts, function (sourcePort) {
         var sourceParentKey = sourcePort.parentNode.key;
-        var sourceKey = sourceParentKey + '.' + sourcePort.key;
+        var sourceKey = moduleName + '.' + sourceParentKey + '.' + sourcePort.key;
         var edgeLabel;
         if (numWires > 1) {
             edgeLabel = [{
@@ -1322,13 +1893,15 @@ function route(sourcePorts, targetPorts, edges, numWires) {
         }
         return targetPorts.map(function (targetPort) {
             var targetParentKey = targetPort.parentNode.key;
-            var targetKey = targetParentKey + '.' + targetPort.key;
-            var id = 'e' + ElkModel.edgeIndex;
+            var targetKey = moduleName + '.' + targetParentKey + '.' + targetPort.key;
+            var id = moduleName + '.e' + ElkModel.edgeIndex;
             var edge = {
                 id: id,
                 labels: edgeLabel,
-                sources: [sourceKey],
-                targets: [targetKey],
+                source: moduleName + '.' + sourceParentKey,
+                sourcePort: sourceKey,
+                target: moduleName + '.' + targetParentKey,
+                targetPort: targetKey,
             };
             ElkModel.wireNameLookup[id] = targetPort.wire.netName;
             if (sourcePort.parentNode.type !== '$dff') {
@@ -1345,11 +1918,48 @@ function route(sourcePorts, targetPorts, edges, numWires) {
     edges.push.apply(edges, newEdges);
 }
 
-},{"lodash":83}],8:[function(require,module,exports){
+},{"lodash":89}],9:[function(require,module,exports){
 (function (global){(function (){
 'use strict';
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+var __generator = (this && this.__generator) || function (thisArg, body) {
+    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g = Object.create((typeof Iterator === "function" ? Iterator : Object).prototype);
+    return g.next = verb(0), g["throw"] = verb(1), g["return"] = verb(2), typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
+    function verb(n) { return function (v) { return step([n, v]); }; }
+    function step(op) {
+        if (f) throw new TypeError("Generator is already executing.");
+        while (g && (g = 0, op[0] && (_ = 0)), _) try {
+            if (f = 1, y && (t = op[0] & 2 ? y["return"] : op[0] ? y["throw"] || ((t = y["return"]) && t.call(y), 0) : y.next) && !(t = t.call(y, op[1])).done) return t;
+            if (y = 0, t) op = [op[0] & 2, t.value];
+            switch (op[0]) {
+                case 0: case 1: t = op; break;
+                case 4: _.label++; return { value: op[1], done: false };
+                case 5: _.label++; y = op[1]; op = [0]; continue;
+                case 7: op = _.ops.pop(); _.trys.pop(); continue;
+                default:
+                    if (!(t = _.trys, t = t.length > 0 && t[t.length - 1]) && (op[0] === 6 || op[0] === 2)) { _ = 0; continue; }
+                    if (op[0] === 3 && (!t || (op[1] > t[0] && op[1] < t[3]))) { _.label = op[1]; break; }
+                    if (op[0] === 6 && _.label < t[1]) { _.label = t[1]; t = op; break; }
+                    if (t && _.label < t[2]) { _.label = t[2]; _.ops.push(op); break; }
+                    if (t[2]) _.ops.pop();
+                    _.trys.pop(); continue;
+            }
+            op = body.call(thisArg, _);
+        } catch (e) { op = [6, e]; y = 0; } finally { f = t = 0; }
+        if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
+    }
+};
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.render = exports.dumpLayout = void 0;
+exports.dumpLayout = dumpLayout;
+exports.render = render;
 var ELK = (typeof window !== "undefined" ? window['ELK'] : typeof global !== "undefined" ? global['ELK'] : null);
 var onml = require("onml");
 var FlatModule_1 = require("./FlatModule");
@@ -1357,55 +1967,78 @@ var Skin_1 = require("./Skin");
 var elkGraph_1 = require("./elkGraph");
 var drawModule_1 = require("./drawModule");
 var elk = new ELK();
-function createFlatModule(skinData, yosysNetlist) {
+function createFlatModule(skinData, yosysNetlist, configData) {
     Skin_1.default.skin = onml.p(skinData);
-    var layoutProps = Skin_1.default.getProperties();
-    var flatModule = new FlatModule_1.FlatModule(yosysNetlist);
-    // this can be skipped if there are no 0's or 1's
-    if (layoutProps.constants !== false) {
-        flatModule.addConstants();
-    }
-    // this can be skipped if there are no splits or joins
-    if (layoutProps.splitsAndJoins !== false) {
-        flatModule.addSplitsJoins();
-    }
-    flatModule.createWires();
-    return flatModule;
+    return FlatModule_1.FlatModule.fromNetlist(yosysNetlist, configData);
 }
-function dumpLayout(skinData, yosysNetlist, prelayout, done) {
-    var flatModule = createFlatModule(skinData, yosysNetlist);
-    var kgraph = elkGraph_1.buildElkGraph(flatModule);
+function dumpLayout(skinData, yosysNetlist, prelayout, done, configData) {
+    var flatModule = createFlatModule(skinData, yosysNetlist, configData);
+    var kgraph = (0, elkGraph_1.buildElkGraph)(flatModule);
     if (prelayout) {
         done(null, JSON.stringify(kgraph, null, 2));
         return;
     }
-    var layoutProps = Skin_1.default.getProperties();
-    var promise = elk.layout(kgraph, { layoutOptions: layoutProps.layoutEngine });
+    var promise = elk.layout(kgraph, { layoutOptions: FlatModule_1.FlatModule.layoutProps.layoutEngine });
     promise.then(function (graph) {
         done(null, JSON.stringify(graph, null, 2));
     }).catch(function (reason) {
         throw Error(reason);
     });
 }
-exports.dumpLayout = dumpLayout;
-function render(skinData, yosysNetlist, done, elkData) {
-    var flatModule = createFlatModule(skinData, yosysNetlist);
-    var kgraph = elkGraph_1.buildElkGraph(flatModule);
-    var layoutProps = Skin_1.default.getProperties();
-    var promise;
-    // if we already have a layout then use it
-    if (elkData) {
-        promise = new Promise(function (resolve) {
-            drawModule_1.default(elkData, flatModule);
-            resolve();
+function prepareInternalSubmodulePages(flatModule) {
+    return __awaiter(this, void 0, void 0, function () {
+        var subCells, _i, subCells_1, cell, _a, subCells_2, cell, subGraph, laid, svg;
+        return __generator(this, function (_b) {
+            switch (_b.label) {
+                case 0:
+                    subCells = FlatModule_1.FlatModule.walkSubModuleCells(flatModule);
+                    for (_i = 0, subCells_1 = subCells; _i < subCells_1.length; _i++) {
+                        cell = subCells_1[_i];
+                        FlatModule_1.FlatModule.addDrilldownPage(cell.parent + '.' + cell.Key, []);
+                    }
+                    _a = 0, subCells_2 = subCells;
+                    _b.label = 1;
+                case 1:
+                    if (!(_a < subCells_2.length)) return [3 /*break*/, 4];
+                    cell = subCells_2[_a];
+                    subGraph = (0, elkGraph_1.buildElkGraph)(cell.subModule);
+                    return [4 /*yield*/, elk.layout(subGraph, { layoutOptions: FlatModule_1.FlatModule.layoutProps.layoutEngine })];
+                case 2:
+                    laid = _b.sent();
+                    svg = (0, drawModule_1.drawFlatModuleInner)(laid, cell.subModule);
+                    FlatModule_1.FlatModule.setDrilldownPageSvg(cell.parent + '.' + cell.Key, svg);
+                    _b.label = 3;
+                case 3:
+                    _a++;
+                    return [3 /*break*/, 1];
+                case 4: return [2 /*return*/];
+            }
         });
+    });
+}
+function render(skinData, yosysNetlist, done, elkData, configData) {
+    var flatModule = createFlatModule(skinData, yosysNetlist, configData);
+    var wantInternalLinks = !!(FlatModule_1.FlatModule.config && FlatModule_1.FlatModule.config.render &&
+        FlatModule_1.FlatModule.config.render.internalSubmoduleLinks === true);
+    var promise;
+    // if we already have a layout then use it (skips the standalone pre-pass)
+    if (elkData) {
+        // still need to populate ElkModel.wireNameLookup for drawModule
+        (0, elkGraph_1.buildElkGraph)(flatModule);
+        promise = Promise.resolve((0, drawModule_1.default)(elkData, flatModule));
     }
     else {
-        // otherwise use ELK to generate the layout
-        promise = elk.layout(kgraph, { layoutOptions: layoutProps.layoutEngine })
-            .then(function (g) { return drawModule_1.default(g, flatModule); })
+        var prep = wantInternalLinks ?
+            prepareInternalSubmodulePages(flatModule) :
+            Promise.resolve();
+        promise = prep
+            .then(function () {
+            var kgraph = (0, elkGraph_1.buildElkGraph)(flatModule);
+            return elk.layout(kgraph, { layoutOptions: FlatModule_1.FlatModule.layoutProps.layoutEngine });
+        })
+            .then(function (g) { return (0, drawModule_1.default)(g, flatModule); })
             // tslint:disable-next-line:no-console
-            .catch(function (e) { console.error(e); });
+            .catch(function (e) { console.error(e); return undefined; });
     }
     // support legacy callback style
     if (typeof done === 'function') {
@@ -1418,10 +2051,71 @@ function render(skinData, yosysNetlist, done, elkData) {
     }
     return promise;
 }
-exports.render = render;
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./FlatModule":2,"./Skin":4,"./drawModule":6,"./elkGraph":7,"onml":85}],9:[function(require,module,exports){
+},{"./FlatModule":3,"./Skin":5,"./drawModule":7,"./elkGraph":8,"onml":91}],10:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.beautifyCellTypeLabel = beautifyCellTypeLabel;
+var PRIMITIVE_LABELS = {
+    '$mem_v2': 'RAM',
+    '$mem': 'RAM',
+    '$divfloor': '/floor',
+    '$modfloor': '%floor',
+    '$shift': 'shift',
+    '$shiftx': 'shift',
+    '$shrx': 'shift',
+    '$bmux': 'bmux',
+    '$demux': 'demux',
+    '$ternary': '?:',
+    '$dlatchsr': 'latch/SR',
+    '$sr': 'SR',
+    '$dffe': 'DFF/E',
+    '$adffe': 'DFF/AR+E',
+    '$sdffe': 'DFF/SR+E',
+    '$dffsr': 'DFF/SR2',
+    '$dffsre': 'DFF/SR2+E',
+    '$mux': 'mux',
+    '$pmux': 'pmux',
+    '$dff': 'DFF',
+    '$adff': 'DFF/AR',
+    '$sdff': 'DFF/SR',
+    '$dffn': 'DFFN',
+    '$dlatch': 'latch',
+    '$adlatch': 'latch',
+    '$dlatchn': 'latch-n',
+    '$tribuf': 'tri',
+};
+var BUS_SUFFIX = /(?:-bus)+$/;
+var PARAMOD = /^\$paramod(?:\$[^\\]+)?\\([^\\]+)(?:\\.*)?$/;
+var GHDL_GENERATED_TYPE = /^(.+)_B[A-Za-z][A-Za-z0-9]*(?:_.*)?$/;
+function cleanIdentifier(name) {
+    return name.replace(/^\\/, '');
+}
+function lookupPrimitive(type) {
+    return PRIMITIVE_LABELS[type] || null;
+}
+function beautifyCellTypeLabel(type, hdlName) {
+    var typeWithoutBus = type.replace(BUS_SUFFIX, '');
+    var primitive = lookupPrimitive(typeWithoutBus);
+    if (primitive !== null) {
+        return primitive;
+    }
+    if (hdlName) {
+        return cleanIdentifier(hdlName);
+    }
+    var paramod = PARAMOD.exec(typeWithoutBus);
+    if (paramod) {
+        return cleanIdentifier(paramod[1]);
+    }
+    var ghdlGenerated = GHDL_GENERATED_TYPE.exec(typeWithoutBus);
+    if (ghdlGenerated) {
+        return cleanIdentifier(ghdlGenerated[1]);
+    }
+    return cleanIdentifier(typeWithoutBus);
+}
+
+},{}],11:[function(require,module,exports){
 (function (Buffer){(function (){
 const lib = require('../built');
 
@@ -1430,9 +2124,9 @@ const Ajv = require('ajv');
 var ajv = new Ajv({allErrors: true});
 require('ajv-errors')(ajv);
 
-const digital = "<svg  xmlns=\"http://www.w3.org/2000/svg\"\n  xmlns:xlink=\"http://www.w3.org/1999/xlink\"\n  xmlns:s=\"https://github.com/nturley/netlistsvg\"\n  width=\"800\" height=\"300\">\n  <s:properties>\n    <s:layoutEngine\n      org.eclipse.elk.layered.spacing.nodeNodeBetweenLayers=\"35\"\n      org.eclipse.elk.spacing.nodeNode= \"35\"\n      org.eclipse.elk.layered.layering.strategy= \"LONGEST_PATH\"\n    />\n    <s:low_priority_alias val=\"$dff\" />\n  </s:properties>\n<style>\nsvg {\n  stroke:#000;\n  fill:none;\n}\ntext {\n  fill:#000;\n  stroke:none;\n  font-size:10px;\n  font-weight: bold;\n  font-family: \"Courier New\", monospace;\n}\nline {\n    stroke-linecap: round;\n}\n.nodelabel {\n  text-anchor: middle;\n}\n.inputPortLabel {\n  text-anchor: end;\n}\n.splitjoinBody {\n  fill:#000;\n}\n</style>\n  <g s:type=\"mux\" transform=\"translate(50, 50)\" s:width=\"20\" s:height=\"40\">\n    <s:alias val=\"$pmux\"/>\n    <s:alias val=\"$mux\"/>\n    <s:alias val=\"$_MUX_\"/>\n\n    <path d=\"M0,0 L20,10 L20,30 L0,40 Z\" class=\"$cell_id\"/>\n\n    <text x=\"5\" y=\"32\" class=\"nodelabel $cell_id\" s:attribute=\"\">1</text>\n    <text x=\"5\" y=\"13\" class=\"nodelabel $cell_id\" s:attribute=\"\">0</text>\n    <g s:x=\"0\" s:y=\"10\" s:pid=\"A\"/>\n    <g s:x=\"0\" s:y=\"30\" s:pid=\"B\"/>\n    <g s:x=\"10\" s:y=\"35\" s:pid=\"S\"/>\n    <g s:x=\"20\" s:y=\"20\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"mux-bus\" transform=\"translate(100, 50)\" s:width=\"24\" s:height=\"40\">\n    <s:alias val=\"$pmux-bus\"/>\n    <s:alias val=\"$mux-bus\"/>\n    <s:alias val=\"$_MUX_-bus\"/>\n\n    <path d=\"M0,0 L20,10 L20,30 L0,40 Z\" class=\"$cell_id\"/>\n    <path d=\"M4,2 L4,0 L22,9 L22,31 L4,40 L4,38\" class=\"$cell_id\"/>\n    <path d=\"M8,2 L8,0 L24,8 L24,32 L8,40 L8,38\" class=\"$cell_id\"/>\n\n    <text x=\"5\" y=\"32\" class=\"nodelabel $cell_id\" s:attribute=\"\">1</text>\n    <text x=\"5\" y=\"13\" class=\"nodelabel $cell_id\" s:attribute=\"\">0</text>\n    <g s:x=\"-1\" s:y=\"10\" s:pid=\"A\"/>\n    <g s:x=\"-1\" s:y=\"30\" s:pid=\"B\"/>\n    <g s:x=\"12\" s:y=\"38\" s:pid=\"S\"/>\n    <g s:x=\"24.5\" s:y=\"20\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"tribuf\" transform=\"translate(450, 50)\" s:width=\"15\" s:height=\"30\">\n    <s:alias val=\"$tribuf\"/>\n    <s:alias val=\"$_TRIBUF_\"/>\n\n    <s:alias val=\"tribuf-bus\"/>\n    <s:alias val=\"$tribuf-bus\"/>\n    <s:alias val=\"$_TRIBUF_-bus\"/>\n\n    <path d=\"M0,0 L25,15 L0,30 Z\" class=\"$cell_id\"/>\n\n    <g s:x=\"0\" s:y=\"15\" s:pid=\"A\"/>\n    <g s:x=\"11\" s:y=\"6\" s:pid=\"EN\"/>\n    <g s:x=\"25\" s:y=\"15\" s:pid=\"Y\"/>\n  </g>\n\n  <!-- and -->\n  <g s:type=\"and\" transform=\"translate(150,50)\" s:width=\"30\" s:height=\"25\">\n    <s:alias val=\"$and\"/>\n    <s:alias val=\"$logic_and\"/>\n    <s:alias val=\"$_AND_\"/>\n\n    <path d=\"M0,0 L0,25 L15,25 A15 12.5 0 0 0 15,0 Z\" class=\"$cell_id\"/>\n\n    <g s:x=\"0\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"0\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"30\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n  <g s:type=\"nand\" transform=\"translate(150,100)\" s:width=\"30\" s:height=\"25\">\n    <s:alias val=\"$nand\"/>\n    <s:alias val=\"$logic_nand\"/>\n    <s:alias val=\"$_NAND_\"/>\n    <s:alias val=\"$_ANDNOT_\"/>\n\n    <path d=\"M0,0 L0,25 L15,25 A15 12.5 0 0 0 15,0 Z\" class=\"$cell_id\"/>\n    <circle cx=\"34\" cy=\"12.5\" r=\"3\" class=\"$cell_id\"/>\n\n    <g s:x=\"0\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"0\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"36\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <!-- or -->\n  <g s:type=\"or\" transform=\"translate(250,50)\" s:width=\"30\" s:height=\"25\">\n    <s:alias val=\"$or\"/>\n    <s:alias val=\"$logic_or\"/>\n    <s:alias val=\"$_OR_\"/>\n\n    <path d=\"M0,25 L0,25 L15,25 A15 12.5 0 0 0 15,0 L0,0\" class=\"$cell_id\"/>\n    <path d=\"M0,0 A30 25 0 0 1 0,25\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"30\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n  <g s:type=\"reduce_nor\" transform=\"translate(250, 100)\" s:width=\"33\" s:height=\"25\">\n    <s:alias val=\"$nor\"/>\n    <s:alias val=\"$reduce_nor\"/>\n    <s:alias val=\"$_NOR_\"/>\n    <s:alias val=\"$_ORNOT_\"/>\n\n    <path d=\"M0,25 L0,25 L15,25 A15 12.5 0 0 0 15,0 L0,0\" class=\"$cell_id\"/>\n    <path d=\"M0,0 A30 25 0 0 1 0,25\" class=\"$cell_id\"/>\n    <circle cx=\"34\" cy=\"12.5\" r=\"3\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"36\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <!--xor -->\n  <g s:type=\"reduce_xor\" transform=\"translate(350, 50)\" s:width=\"33\" s:height=\"25\">\n    <s:alias val=\"$xor\"/>\n    <s:alias val=\"$reduce_xor\"/>\n    <s:alias val=\"$_XOR_\"/>\n\n    <path d=\"M3,0 A30 25 0 0 1 3,25 A30 25 0 0 0 33,12.5 A30 25 0 0 0 3,0\" class=\"$cell_id\"/>\n    <path d=\"M0,0 A30 25 0 0 1 0,25\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"33\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n  <g s:type=\"reduce_nxor\" transform=\"translate(350, 100)\" s:width=\"33\" s:height=\"25\">\n    <s:alias val=\"$xnor\"/>\n    <s:alias val=\"$reduce_xnor\"/>\n    <s:alias val=\"$_XNOR_\"/>\n\n    <path d=\"M3,0 A30 25 0 0 1 3,25 A30 25 0 0 0 33,12.5 A30 25 0 0 0 3,0\" class=\"$cell_id\"/>\n    <path d=\"M0,0 A30 25 0 0 1 0,25\" class=\"$cell_id\"/>\n    <circle cx=\"36\" cy=\"12.5\" r=\"3\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"38\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <!--buffer -->\n  <g s:type=\"not\" transform=\"translate(450,100)\" s:width=\"30\" s:height=\"20\">\n    <s:alias val=\"$_NOT_\"/>\n    <s:alias val=\"$not\"/>\n    <s:alias val=\"$logic_not\"/>\n\n    <path d=\"M0,0 L0,20 L20,10 Z\" class=\"$cell_id\"/>\n    <circle cx=\"24\" cy=\"10\" r=\"3\" class=\"$cell_id\"/>\n\n    <g s:x=\"-1\" s:y=\"10\" s:pid=\"A\"/>\n    <g s:x=\"27\" s:y=\"10\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"add\" transform=\"translate(50, 150)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$add\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" class=\"$cell_id\"/>\n    <line x1=\"7.5\" x2=\"17.5\" y1=\"12.5\" y2=\"12.5\" class=\"$cell_id\"/>\n    <line x1=\"12.5\" x2=\"12.5\" y1=\"7.5\" y2=\"17.5\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"26\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"sub\" transform=\"translate(150,150)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$sub\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" class=\"$cell_id\"/>\n    <line x1=\"7.5\" x2=\"17.5\" y1=\"12.5\" y2=\"12.5\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n  <g s:type=\"eq\" transform=\"translate(250,150)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$eq\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" class=\"$cell_id\"/>\n    <line x1=\"7.5\" x2=\"17.5\" y1=\"10\" y2=\"10\" class=\"$cell_id\"/>\n    <line x1=\"7.5\" x2=\"17.5\" y1=\"15\" y2=\"15\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"dff\" transform=\"translate(350,150)\" s:width=\"30\" s:height=\"40\">\n    <s:alias val=\"$dff\"/>\n    <s:alias val=\"$_DFF_\"/>\n    <s:alias val=\"$_DFF_P_\"/>\n\n    <s:alias val=\"dff-bus\"/>\n    <s:alias val=\"$dff-bus\"/>\n    <s:alias val=\"$_DFF_-bus\"/>\n    <s:alias val=\"$_DFF_P_-bus\"/>\n\n    <rect width=\"30\" height=\"40\" x=\"0\" y=\"0\" class=\"$cell_id\"/>\n    <path d=\"M0,35 L5,30 L0,25\" class=\"$cell_id\"/>\n\n    <g s:x=\"31\" s:y=\"10\" s:pid=\"Q\"/>\n    <g s:x=\"-1\" s:y=\"30\" s:pid=\"CLK\"/>\n    <g s:x=\"-1\" s:y=\"30\" s:pid=\"C\"/>\n    <g s:x=\"-1\" s:y=\"10\" s:pid=\"D\"/>\n  </g>\n\n  <g s:type=\"dffn\" transform=\"translate(450,150)\" s:width=\"30\" s:height=\"40\">\n    <s:alias val=\"$_DFF_N_\"/>\n\n    <s:alias val=\"dffn-bus\"/>\n    <s:alias val=\"$_DFF_N_-bus\"/>\n\n    <rect width=\"30\" height=\"40\" x=\"0\" y=\"0\" class=\"$cell_id\"/>\n    <path d=\"M0,35 L5,30 L0,25\" class=\"$cell_id\"/>\n    <circle cx=\"-3\" cy=\"30\" r=\"3\" class=\"$cell_id\"/>\n\n    <g s:x=\"30\" s:y=\"10\" s:pid=\"Q\"/>\n    <g s:x=\"-6\" s:y=\"30\" s:pid=\"CLK\"/>\n    <g s:x=\"-6\" s:y=\"30\" s:pid=\"C\"/>\n    <g s:x=\"0\" s:y=\"10\" s:pid=\"D\"/>\n  </g>\n\n  <g s:type=\"lt\" transform=\"translate(50,200)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$lt\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" class=\"$cell_id\"/>\n    <line x1=\"6\" x2=\"17\" y1=\"12\"  y2=\"7\" class=\"$cell_id\"/>\n    <line x1=\"6\" x2=\"17\" y1=\"12\" y2=\"17\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"le\" transform=\"translate(150,200)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$le\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" class=\"$cell_id\"/>\n    <line x1=\"6\" x2=\"17\" y1=\"11\"  y2=\"6\" class=\"$cell_id\"/>\n    <line x1=\"6\" x2=\"17\" y1=\"11\" y2=\"16\" class=\"$cell_id\"/>\n    <line x1=\"6\" x2=\"17\" y1=\"14\" y2=\"19\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"ge\" transform=\"translate(250,200)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$ge\"/>\n\n    <circle r=\"12\" cx=\"12\" cy=\"12\" class=\"$cell_id\"/>\n    <line x1=\"8\" x2=\"19\"  y1=\"6\" y2=\"11\" class=\"$cell_id\"/>\n    <line x1=\"8\" x2=\"19\" y1=\"16\" y2=\"11\" class=\"$cell_id\"/>\n    <line x1=\"8\" x2=\"19\" y1=\"19\" y2=\"14\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"gt\" transform=\"translate(350,200)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$gt\"/>\n\n    <circle r=\"12\" cx=\"12\" cy=\"12\" class=\"$cell_id\"/>\n    <line x1=\"8\" x2=\"19\"  y1=\"7\" y2=\"12\" class=\"$cell_id\"/>\n    <line x1=\"8\" x2=\"19\" y1=\"17\" y2=\"12\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"inputExt\" transform=\"translate(50,250)\" s:width=\"30\" s:height=\"20\">\n    <text x=\"15\" y=\"-4\" class=\"nodelabel $cell_id\" s:attribute=\"ref\">input</text>\n    <s:alias val=\"$_inputExt_\"/>\n    <path d=\"M0,0 L0,20 L15,20 L30,10 L15,0 Z\" class=\"$cell_id\"/>\n    <g s:x=\"30\" s:y=\"10\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"constant\" transform=\"translate(150,250)\" s:width=\"30\" s:height=\"20\">\n    <text x=\"15\" y=\"-4\" class=\"nodelabel $cell_id\" s:attribute=\"ref\">constant</text>\n\n    <s:alias val=\"$_constant_\"/>\n    <rect width=\"30\" height=\"20\" class=\"$cell_id\"/>\n\n    <g s:x=\"31\" s:y=\"10\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"outputExt\" transform=\"translate(250,250)\" s:width=\"30\" s:height=\"20\">\n    <text x=\"15\" y=\"-4\" class=\"nodelabel $cell_id\" s:attribute=\"ref\">output</text>\n    <s:alias val=\"$_outputExt_\"/>\n    <path d=\"M30,0 L30,20 L15,20 L0,10 L15,0 Z\" class=\"$cell_id\"/>\n\n    <g s:x=\"0\" s:y=\"10\" s:pid=\"A\"/>\n  </g>\n\n  <g s:type=\"split\" transform=\"translate(350,250)\" s:width=\"5\" s:height=\"40\">\n    <rect width=\"5\" height=\"40\" class=\"splitjoinBody\" s:generic=\"body\"/>\n    <s:alias val=\"$_split_\"/>\n\n    <g s:x=\"0\" s:y=\"20\" s:pid=\"in\"/>\n    <g transform=\"translate(5, 10)\" s:x=\"4\" s:y=\"10\" s:pid=\"out0\">\n      <text x=\"5\" y=\"-4\">hi:lo</text>\n    </g>\n    <g transform=\"translate(5, 30)\" s:x=\"4\" s:y=\"30\" s:pid=\"out1\">\n      <text x=\"5\" y=\"-4\">hi:lo</text>\n    </g>\n  </g>\n\n  <g s:type=\"join\" transform=\"translate(450,250)\" s:width=\"4\" s:height=\"40\">\n    <rect width=\"5\" height=\"40\" class=\"splitjoinBody\" s:generic=\"body\"/>\n    <s:alias val=\"$_join_\"/>\n    <g s:x=\"5\" s:y=\"20\"  s:pid=\"out\"/>\n    <g transform=\"translate(0, 10)\" s:x=\"0\" s:y=\"10\" s:pid=\"in0\">\n      <text x=\"-3\" y=\"-4\" class=\"inputPortLabel\">hi:lo</text>\n    </g>\n    <g transform=\"translate(0, 30)\" s:x=\"0\" s:y=\"30\" s:pid=\"in1\">\n      <text x=\"-3\" y=\"-4\" class=\"inputPortLabel\">hi:lo</text>\n    </g>\n  </g>\n\n  <g s:type=\"generic\" transform=\"translate(550,250)\" s:width=\"30\" s:height=\"40\">\n\n    <text x=\"15\" y=\"-4\" class=\"nodelabel $cell_id\" s:attribute=\"ref\">generic</text>\n    <rect width=\"30\" height=\"40\" s:generic=\"body\" class=\"$cell_id\"/>\n\n    <g transform=\"translate(30, 10)\" s:x=\"30\" s:y=\"10\" s:pid=\"out0\">\n      <text x=\"5\" y=\"-4\" style=\"fill:#000; stroke:none\" class=\"$cell_id\">out0</text>\n    </g>\n    <g transform=\"translate(30, 30)\" s:x=\"30\" s:y=\"30\" s:pid=\"out1\">\n      <text x=\"5\" y=\"-4\" style=\"fill:#000;stroke:none\" class=\"$cell_id\">out1</text>\n    </g>\n    <g transform=\"translate(0, 10)\" s:x=\"0\" s:y=\"10\" s:pid=\"in0\">\n      <text x=\"-3\" y=\"-4\" class=\"inputPortLabel $cell_id\">in0</text>\n    </g>\n    <g transform=\"translate(0, 30)\" s:x=\"0\" s:y=\"30\" s:pid=\"in1\">\n      <text x=\"-3\" y=\"-4\" class=\"inputPortLabel $cell_id\">in1</text>\n    </g>\n  </g>\n\n</svg>\n";
-const analog = "<svg xmlns=\"http://www.w3.org/2000/svg\"\n     xmlns:xlink=\"http://www.w3.org/1999/xlink\"\n     xmlns:s=\"https://github.com/nturley/netlistsvg\">\n  <s:properties\n    constants=\"false\"\n    splitsAndJoins=\"false\"\n    genericsLaterals=\"true\">\n    <s:layoutEngine\n        org.eclipse.elk.layered.spacing.nodeNodeBetweenLayers=\"5\"\n        org.eclipse.elk.layered.compaction.postCompaction.strategy=\"4\"\n        org.eclipse.elk.spacing.nodeNode= \"35\"\n        org.eclipse.elk.direction=\"DOWN\"/>\n  </s:properties>\n<style>\nsvg {\n  stroke: #000;\n  fill: none;\n}\ntext {\n  fill: #000;\n  stroke: none;\n  font-size: 10px;\n  font-weight: bold;\n  font-family: \"Courier New\", monospace;\n}\n.nodelabel {\n  text-anchor: middle;\n}\n.inputPortLabel {\n  text-anchor: end;\n}\n.splitjoinBody {\n  fill: #000;\n}\n.symbol {\n  stroke-linejoin: round;\n  stroke-linecap: round;\n  stroke-width: 2;\n}\n.detail {\n  stroke-linejoin: round;\n  stroke-linecap: round;\n  fill: #000;\n}\n</style>\n\n<!-- power -->\n<g s:type=\"vcc\" s:width=\"20\" s:height=\"30\" transform=\"translate(5,20)\">\n  <s:alias val=\"vcc\" />\n  <text x=\"10\" y=\"-4\" class=\"nodelabel $cell_id\" s:attribute=\"name\">name</text>\n  <path d=\"M0,0 H20 L10,15 Z M10,15 V30\" class=\"$cell_id\"/>\n  <g s:x=\"10\" s:y=\"30\" s:pid=\"A\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"vee\" s:width=\"20\" s:height=\"30\" transform=\"translate(40,35)\">\n\t  <s:alias val=\"vee\" />\n\t  <text x=\"10\" y=\"10\" class=\"nodelabel $cell_id\" s:attribute=\"name\">name</text>\n\t  <path d=\"M0,0 H20 L10,-15 Z M10,-15 V-30\" class=\"$cell_id\"/>\n\t  <g s:x=\"10\" s:y=\"-30\" s:pid=\"A\" s:position=\"top\"/>\n\t</g>\n\n<g s:type=\"gnd\" s:width=\"20\" s:height=\"30\" transform=\"translate(80,35)\">\n  <s:alias val=\"gnd\"/>\n  <text x=\"30\" y=\"20\" class=\"nodelabel $cell_id\" s:attribute=\"name\">name</text>\n  <path d=\"M0,0 H20 M3,5 H17 M7,10 H13 M10,0 V-15\" class=\"$cell_id\"/>\n  <g s:x=\"10\" s:y=\"-15\" s:pid=\"A\" s:position=\"top\"/>\n</g>\n<!-- power -->\n\n<!-- signal -->\n<g s:type=\"inputExt\" s:width=\"30\" s:height=\"20\" transform=\"translate(5,70)\">\n  <text x=\"15\" y=\"-4\" class=\"$cell_id\" s:attribute=\"ref\">input</text>\n  <s:alias val=\"$_inputExt_\"/>\n  <path d=\"M0,0 V20 H15 L30,10 15,0 Z\" class=\"$cell_id\"/>\n  <g s:x=\"30\" s:y=\"10\" s:pid=\"Y\" s:position=\"right\"/>\n</g>\n\n<g s:type=\"outputExt\" s:width=\"30\" s:height=\"20\" transform=\"translate(60,70)\">\n  <text x=\"15\" y=\"-4\" class=\"$cell_id\" s:attribute=\"ref\">output</text>\n  <s:alias val=\"$_outputExt_\"/>\n  <path d=\"M30,0 V20 H15 L0,10 15,0 Z\" class=\"$cell_id\"/>\n  <g s:x=\"0\" s:y=\"10\" s:pid=\"A\" s:position=\"left\"/>\n</g>\n<!-- signal -->\n\n<!-- passives -->\n<g s:type=\"resistor_h\" s:width=\"50\" s:height=\"10\" transform=\"translate(5,110)\">\n  <s:alias val=\"r_h\"/>\n  <text class=\"nodelabel $cell_id\" x=\"25\" y=\"-5\" s:attribute=\"ref\">X1</text>\n  <text class=\"nodelabel $cell_id\" x=\"25\" y=\"20\" s:attribute=\"value\">Xk</text>\n  <path d=\"M10,0 H40 V10 H10 Z\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,5 H10 M40,5 H50\" class=\"connect $cell_id\"/>\n  <g s:x=\"0\" s:y=\"5\" s:pid=\"A\" s:position=\"left\"/>\n  <g s:x=\"50\" s:y=\"5\" s:pid=\"B\" s:position=\"right\"/>\n</g>\n\n<g s:type=\"resistor_v\" s:width=\"10\" s:height=\"50\" transform=\"translate(25,130)\">\n  <s:alias val=\"r_v\"/>\n  <text x=\"15\"  y=\"15\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <text x=\"15\" y=\"30\" s:attribute=\"value\" class=\"$cell_id\" >Xk</text>\n  <path d=\"M0,10 V40 H10 V10 Z\" class=\"symbol $cell_id\"/>\n  <path d=\"M5,0 V10 M5,40 V50\" class=\"connect $cell_id\"/>\n  <g s:x=\"5\" s:y=\"0\" s:pid=\"A\" s:position=\"top\"/>\n  <g s:x=\"5\" s:y=\"50\" s:pid=\"B\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"capacitor_h\" s:width=\"50\" s:height=\"30\" transform=\"translate(60,100)\">\n  <s:alias val=\"c_h\"/>\n  <text x=\"35\" y=\"5\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <text x=\"35\" y=\"30\" s:attribute=\"value\" class=\"$cell_id\">Xu</text>\n  <path d=\"M20,0 V30 M30,0 V30\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,15 H20 M30,15 H50\" class=\"connect $cell_id\"/>\n  <g s:x=\"0\" s:y=\"15\" s:pid=\"A\" s:position=\"left\"/>\n  <g s:x=\"50\" s:y=\"15\" s:pid=\"B\" s:position=\"right\"/>\n</g>\n\n<g s:type=\"capacitor_v\" s:width=\"30\" s:height=\"50\" transform=\"translate(70,130)\">\n  <s:alias val=\"c_v\"/>\n  <text x=\"25\" y=\"10\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <text x=\"25\" y=\"45\" s:attribute=\"value\" class=\"$cell_id\">Xu</text>\n  <path d=\"M0,20 H30 M0,30 H30\" class=\"symbol $cell_id\"/>\n  <path d=\"M15,0 V20 M15,30 V50\" class=\"connect $cell_id\"/>\n  <g s:x=\"15\" s:y=\"0\" s:pid=\"A\" s:position=\"top\"/>\n  <g s:x=\"15\" s:y=\"50\" s:pid=\"B\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"inductor_h\" s:width=\"50\" s:height=\"10\" transform=\"translate(115,110)\">\n  <s:alias val=\"l_h\"/>\n  <text class=\"nodelabel $cell_id\" x=\"25\" y=\"-5\" s:attribute=\"ref\">X1</text>\n  <text class=\"nodelabel $cell_id\" x=\"25\" y=\"20\" s:attribute=\"value\">XpF</text>\n  <path d=\"M5,5 A5,5 0 0 1 15,5 A5,5 0 0 1 25,5 A5,5 0 0 1 35,5 A5,5 0 0 1 45,5\" class=\"$cell_id\"/>\n  <path d=\"M0,5 H5 M45,5 H50\" class=\"connect $cell_id\"/>\n  <g s:x=\"0\" s:y=\"5\" s:pid=\"A\" s:position=\"left\"/>\n  <g s:x=\"50\" s:y=\"5\" s:pid=\"B\" s:position=\"right\"/>\n</g>\n\n<g s:type=\"inductor_v\" s:width=\"10\" s:height=\"50\" transform=\"translate(135,130)\">\n  <s:alias val=\"l_v\"/>\n  <text x=\"15\" y=\"15\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <text x=\"15\" y=\"35\" s:attribute=\"value\" class=\"$cell_id\">XpF</text>\n  <path d=\"M5,5 A5,5 0 0 1 5,15 A5,5 0 0 1 5,25 A5,5 0 0 1 5,35 A5,5 0 0 1 5,45\" class=\"$cell_id\"/>\n  <path d=\"M5,0 V5 M5,45 V50\" class=\"connect $cell_id\"/>\n  <g s:x=\"5\" s:y=\"0\" s:pid=\"A\" s:position=\"top\"/>\n  <g s:x=\"5\" s:y=\"50\" s:pid=\"B\" s:position=\"bottom\"/>\n</g>\n<!-- passives -->\n\n<!-- sources -->\n<g s:type=\"voltage_source\" s:width=\"32\" s:height=\"52\" transform=\"translate(20,180)\">\n  <s:alias val=\"v\"/>\n  <text x=\"35\" y=\"20\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <text x=\"35\" y=\"35\" s:attribute=\"value\" class=\"$cell_id\">XV</text>\n  <circle cx=\"16\" cy=\"26\" r=\"16\" class=\"symbol $cell_id\"/>\n  <path d=\"M16,10 V42\" class=\"detail $cell_id\"/>\n  <path d=\"M16,0 V10 M16,42 V52\" class=\"connect $cell_id\"/>\n  <g s:x=\"16\" s:y=\"0\" s:pid=\"+\" s:position=\"top\"/>\n  <g s:x=\"16\" s:y=\"52\" s:pid=\"-\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"current_source\" s:width=\"32\" s:height=\"52\" transform=\"translate(75,180)\">\n  <s:alias val=\"i\"/>\n  <text x=\"35\" y=\"20\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <text x=\"35\" y=\"35\" s:attribute=\"value\" class=\"$cell_id\">XA</text>\n  <circle cx=\"16\" cy=\"26\" r=\"16\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,26 H32\" class=\"detail $cell_id\"/>\n  <path d=\"M16,0 V10 M16,42 V52\" class=\"connect $cell_id\"/>\n  <g s:x=\"16\" s:y=\"0\" s:pid=\"+\" s:position=\"top\"/>\n  <g s:x=\"16\" s:y=\"52\" s:pid=\"-\" s:position=\"bottom\"/>\n</g>\n<!-- sources -->\n\n<!-- diodes -->\n<g s:type=\"diode_h\" s:width=\"50\" s:height=\"20\" transform=\"translate(5,250)\">\n  <s:alias val=\"d_h\"/>\n  <text class=\"nodelabel $cell_id\" x=\"25\" y=\"-5\" s:attribute=\"ref\">X1</text>\n  <path d=\"M15,0 V20 L35,10 Z M35,0 V20\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,10 H15 M35,10 H50\" class=\"connect $cell_id\"/>\n  <g s:x=\"0\" s:y=\"10\" s:pid=\"+\" s:position=\"left\"/>\n  <g s:x=\"50\" s:y=\"10\" s:pid=\"-\" s:position=\"right\"/>\n</g>\n\n<g s:type=\"diode_v\" s:width=\"20\" s:height=\"50\" transform=\"translate(20,280)\">\n  <s:alias val=\"d_v\"/>\n  <text x=\"25\" y=\"25\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <path d=\"M0,15 H20 L10,35 Z M0,35 H20\" class=\"symbol $cell_id\"/>\n  <path d=\"M10,0 V15 M10,35 V50\" class=\"connect $cell_id\"/>\n  <g s:x=\"10\" s:y=\"0\" s:pid=\"+\" s:position=\"top\"/>\n  <g s:x=\"10\" s:y=\"50\" s:pid=\"-\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"diode_schottky_h\" s:width=\"50\" s:height=\"20\" transform=\"translate(60,250)\">\n  <s:alias val=\"d_sk_h\"/>\n  <text class=\"nodelabel $cell_id\" x=\"25\" y=\"-5\" s:attribute=\"ref\">X1</text>\n  <path d=\"M15,0 V20 L35,10 Z M35,0 V20\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,10 H15 M35,10 H50\" class=\"connect $cell_id\"/>\n  <!-- schottky -->\n  <path d=\"M35,0 H40 M35,20 H30\" class=\"symbol $cell_id\"/>\n  <g s:x=\"0\" s:y=\"10\" s:pid=\"+\" s:position=\"left\"/>\n  <g s:x=\"50\" s:y=\"10\" s:pid=\"-\" s:position=\"right\"/>\n</g>\n\n<g s:type=\"diode_schottky_v\" s:width=\"20\" s:height=\"50\" transform=\"translate(75,280)\">\n  <s:alias val=\"d_sk_v\"/>\n  <text x=\"25\" y=\"25\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <path d=\"M0,15 H20 L10,35 Z M0,35 H20\" class=\"symbol $cell_id\"/>\n  <path d=\"M10,0 V15 M10,35 V50\" class=\"connect $cell_id\"/>\n  <!-- schottky -->\n  <path d=\"M0,35 V40 M20,35 V30\" class=\"symbol $cell_id\"/>\n  <g s:x=\"10\" s:y=\"0\" s:pid=\"+\" s:position=\"top\"/>\n  <g s:x=\"10\" s:y=\"50\" s:pid=\"-\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"diode_led_h\" s:width=\"50\" s:height=\"20\" transform=\"translate(115,250)\">\n  <s:alias val=\"d_led_h\"/>\n  <text class=\"nodelabel $cell_id\" x=\"10\" y=\"-5\" s:attribute=\"ref\">X1</text>\n  <path d=\"M15,0 V20 L35,10 Z M35,0 V20\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,10 H15 M35,10 H50\" class=\"connect $cell_id\"/>\n  <!-- led -->\n  <path d=\"m20,-5 7,-7\" class=\"detail $cell_id\"/>\n  <path d=\"m24,-12 6,-3 -3,6 z\" class=\"detail $cell_id\"/>\n  <path d=\"m25,0 7,-7\" class=\"detail $cell_id\"/>\n  <path d=\"m29,-7 6,-3 -3,6 z\" class=\"detail $cell_id\"/>\n  <g s:x=\"0\" s:y=\"10\" s:pid=\"+\" s:position=\"top\"/>\n  <g s:x=\"50\" s:y=\"10\" s:pid=\"-\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"diode_led_v\" s:width=\"20\" s:height=\"50\" transform=\"translate(130,280)\">\n  <s:alias val=\"d_led_v\"/>\n  <text x=\"25\" y=\"25\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <path d=\"M0,15 H20 L10,35 Z M0,35 H20\" class=\"symbol $cell_id\"/>\n  <path d=\"M10,0 V15 M10,35 V50\" class=\"connect $cell_id\"/>\n  <!-- led -->\n  <path d=\"m-5,20 -7,7\" class=\"detail $cell_id\"/>\n  <path d=\"m-12,24 -3,6 6,-3 z\" class=\"detail $cell_id\"/>\n  <path d=\"m0,25 -7,7\" class=\"detail $cell_id\"/>\n  <path d=\"m-7,29 -3,6 6,-3 z\" class=\"detail $cell_id\"/>\n  <g s:x=\"10\" s:y=\"0\" s:pid=\"+\" s:position=\"top\"/>\n  <g s:x=\"10\" s:y=\"50\" s:pid=\"-\" s:position=\"bottom\"/>\n</g>\n<!-- diodes -->\n\n<!-- transistors -->\n<g s:type=\"transistor_npn\" s:width=\"32\" s:height=\"32\" transform=\"translate(15,350)\">\n  <s:alias val=\"q_npn\"/>\n  <text x=\"35\" y=\"20\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <circle r=\"16\" cx=\"16\" cy=\"16\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,16 H12 M12,6 V26\" class=\"detail $cell_id\"/>\n  <path d=\"m12,10 11,-8\" class=\"detail $cell_id\"/>\n  <path d=\"m12,21 11,8\" class=\"detail $cell_id\"/>\n  <!-- npn -->\n  <path d=\"m23,29 -6,-1 3,-5 z\" style=\"fill:#000000\" class=\"$cell_id\"/>\n  <g s:x=\"22\" s:y=\"2\" s:pid=\"C\" s:position=\"top\"/>\n  <g s:x=\"0\" s:y=\"16\" s:pid=\"B\" s:position=\"left\"/>\n  <g s:x=\"23\" s:y=\"29\" s:pid=\"E\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"transistor_pnp\" s:width=\"32\" s:height=\"32\" transform=\"translate(85,350)\">\n  <s:alias val=\"q_pnp\"/>\n  <text x=\"35\" y=\"20\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <circle r=\"16\" cx=\"16\" cy=\"16\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,16 H12 M12,6 V26\" class=\"detail $cell_id\"/>\n  <path d=\"m12,10 11,-8\" class=\"detail $cell_id\"/>\n  <path d=\"m12,21 11,8\" class=\"detail $cell_id\"/>\n  <!-- pnp -->\n  <path d=\"m14,9 6,-1 -3,-5 z\" style=\"fill:#000000\" class=\"$cell_id\"/>\n  <g s:x=\"22\" s:y=\"2\" s:pid=\"C\" s:position=\"top\"/>\n  <g s:x=\"0\" s:y=\"16\" s:pid=\"B\" s:position=\"left\"/>\n  <g s:x=\"23\" s:y=\"29\" s:pid=\"E\" s:position=\"bottom\"/>\n</g>\n<!-- transistors -->\n\n<!-- builtin -->\n<g s:type=\"generic\" s:width=\"30\" s:height=\"40\" transform=\"translate(150, 400)\">\n  <text x=\"15\" y=\"-4\" class=\"nodelabel $cell_id\" s:attribute=\"ref\">generic</text>\n  <rect width=\"30\" height=\"40\" x=\"0\" y=\"0\" s:generic=\"body\" class=\"$cell_id\"/>\n  <g transform=\"translate(30,10)\"\n     s:x=\"30\" s:y=\"10\" s:pid=\"out0\" s:position=\"right\">\n    <text x=\"5\" y=\"-4\" class=\"$cell_id\">out0</text>\n  </g>\n  <g transform=\"translate(30,30)\"\n     s:x=\"30\" s:y=\"30\" s:pid=\"out1\" s:position=\"right\">\n    <text x=\"5\" y=\"-4\" class=\"$cell_id\">out1</text>\n  </g>\n  <g transform=\"translate(0,10)\"\n     s:x=\"0\" s:y=\"10\" s:pid=\"in0\" s:position=\"left\">\n      <text x=\"-3\" y=\"-4\" class=\"inputPortLabel $cell_id\">in0</text>\n  </g>\n  <g transform=\"translate(0,30)\"\n     s:x=\"0\" s:y=\"30\" s:pid=\"in1\" s:position=\"left\">\n    <text x=\"-3\" y=\"-4\" class=\"inputPortLabel $cell_id\">in1</text>\n  </g>\n</g>\n<!-- builtin -->\n\n<!-- misc -->\n<g s:type=\"opamp\" s:width=\"60\" s:height=\"40\" transform=\"translate(20,450)\">\n  <s:alias val=\"op\"/>\n  <text x=\"40\" y=\"35\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <path d=\"M10,0 V40 L50,20 Z\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,10 H10 M0,30 H10 M50,20 H60 M30,0 V10 M30,40 V30\" class=\"connect $cell_id\"/>\n  <path d=\"m15,10 5,0 m-2.5,-2.5 0,5\" class=\"detail $cell_id\"/>\n  <path d=\"m15,30 5,0\" class=\"detail $cell_id\"/>\n  <g s:x=\"0\" s:y=\"10\" s:pid=\"+\" s:position=\"left\"/>\n  <g s:x=\"0\" s:y=\"30\" s:pid=\"-\" s:position=\"left\"/>\n  <g s:x=\"60\" s:y=\"20\" s:pid=\"OUT\" s:position=\"right\"/>\n  <g s:x=\"30\" s:y=\"0\" s:pid=\"VCC\" s:position=\"top\"/>\n  <g s:x=\"30\" s:y=\"40\" s:pid=\"VEE\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"xtal\" s:width=\"40\" s:height=\"30\" transform=\"translate(90,450)\">\n  <s:alias val=\"xtal\"/>\n  <text class=\"nodelabel $cell_id\" x=\"20\" y=\"45\" s:attribute=\"ref\">X1</text>\n  <rect x=\"15\" y=\"0\" width=\"10\" height=\"30\" class=\"symbol $cell_id\" />\n  <path d=\"M0,15 H10 M10,5 V25 M30,5 V25 M30,15 H40\" class=\"$cell_id\"/>\n  <g s:x=\"0\" s:y=\"15\" s:pid=\"A\" s:position=\"left\"/>\n  <g s:x=\"40\" s:y=\"15\" s:pid=\"B\" s:position=\"right\"/>\n</g>\n\n<g s:type=\"transformer_1p_1s\" s:width=\"35\" s:height=\"45\" transform=\"translate(140,450)\">\n  <s:alias val=\"transformer_1p_1s\"/>\n  <text class=\"nodelabel $cell_id\" x=\"25\" y=\"55\" s:attribute=\"ref\">X1</text>\n  <path d=\"M10,0 A5,5 0 0 1 10,10 A5,5 0 0 1 10,20 A5,5 0 0 1 10,30 A5,5 0 0 1 10,40\" class=\"$cell_id\"/>\n  <path d=\"M35,0 A5,5 0 0 0 35,10 A5,5 0 0 0 35,20 A5,5 0 0 0 35,30 A5,5 0 0 0 35,40\" class=\"$cell_id\"/>\n  <path d=\"M20,0 V40 M25,0 V40\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,0 H10 M0,40 H10 M35,0 H45 M35,40 H45\" class=\"connect $cell_id\"/>\n  <g s:x=\"0\" s:y=\"0\" s:pid=\"L1.1\" s:position=\"left\"/>\n  <g s:x=\"0\" s:y=\"40\" s:pid=\"L1.2\" s:position=\"left\"/>\n  <g s:x=\"40\" s:y=\"0\" s:pid=\"L2.1\" s:position=\"right\"/>\n  <g s:x=\"40\" s:y=\"40\" s:pid=\"L2.2\" s:position=\"right\"/>\n</g>\n<!-- misc -->\n</svg>\n";
-const exampleDigital = Buffer("ewogICJjcmVhdG9yIjogIllvc3lzIDAuNSsyMjAgKGdpdCBzaGExIDk0ZmJhZmYsIGVtY2MgIC1PcykiLAogICJtb2R1bGVzIjogewogICAgInVwM2Rvd241IjogewogICAgICAicG9ydHMiOiB7CiAgICAgICAgImNsb2NrIjogewogICAgICAgICAgImRpcmVjdGlvbiI6ICJpbnB1dCIsCiAgICAgICAgICAiYml0cyI6IFsgMiBdCiAgICAgICAgfSwKICAgICAgICAiZGF0YV9pbiI6IHsKICAgICAgICAgICJkaXJlY3Rpb24iOiAiaW5wdXQiLAogICAgICAgICAgImJpdHMiOiBbIDMsIDQsIDUsIDYsIDcsIDgsIDksIDEwLCAxMSBdCiAgICAgICAgfSwKICAgICAgICAidXAiOiB7CiAgICAgICAgICAiZGlyZWN0aW9uIjogImlucHV0IiwKICAgICAgICAgICJiaXRzIjogWyAxMiBdCiAgICAgICAgfSwKICAgICAgICAiZG93biI6IHsKICAgICAgICAgICJkaXJlY3Rpb24iOiAiaW5wdXQiLAogICAgICAgICAgImJpdHMiOiBbIDEzIF0KICAgICAgICB9LAogICAgICAgICJjYXJyeV9vdXQiOiB7CiAgICAgICAgICAiZGlyZWN0aW9uIjogIm91dHB1dCIsCiAgICAgICAgICAiYml0cyI6IFsgMTQgXQogICAgICAgIH0sCiAgICAgICAgImJvcnJvd19vdXQiOiB7CiAgICAgICAgICAiZGlyZWN0aW9uIjogIm91dHB1dCIsCiAgICAgICAgICAiYml0cyI6IFsgMTUgXQogICAgICAgIH0sCiAgICAgICAgImNvdW50X291dCI6IHsKICAgICAgICAgICJkaXJlY3Rpb24iOiAib3V0cHV0IiwKICAgICAgICAgICJiaXRzIjogWyAxNiwgMTcsIDE4LCAxOSwgMjAsIDIxLCAyMiwgMjMsIDI0IF0KICAgICAgICB9LAogICAgICAgICJwYXJpdHlfb3V0IjogewogICAgICAgICAgImRpcmVjdGlvbiI6ICJvdXRwdXQiLAogICAgICAgICAgImJpdHMiOiBbIDI1IF0KICAgICAgICB9CiAgICAgIH0sCiAgICAgICJjZWxscyI6IHsKICAgICAgICAiJGFkZCRpbnB1dC52OjE3JDMiOiB7CiAgICAgICAgICAiaGlkZV9uYW1lIjogMSwKICAgICAgICAgICJ0eXBlIjogIiRhZGQiLAogICAgICAgICAgInBhcmFtZXRlcnMiOiB7CiAgICAgICAgICAgICJBX1NJR05FRCI6IDAsCiAgICAgICAgICAgICJBX1dJRFRIIjogOSwKICAgICAgICAgICAgIkJfU0lHTkVEIjogMCwKICAgICAgICAgICAgIkJfV0lEVEgiOiAyLAogICAgICAgICAgICAiWV9XSURUSCI6IDEwCiAgICAgICAgICB9LAogICAgICAgICAgImF0dHJpYnV0ZXMiOiB7CiAgICAgICAgICAgICJzcmMiOiAiaW5wdXQudjoxNyIKICAgICAgICAgIH0sCiAgICAgICAgICAicG9ydF9kaXJlY3Rpb25zIjogewogICAgICAgICAgICAiQSI6ICJpbnB1dCIsCiAgICAgICAgICAgICJCIjogImlucHV0IiwKICAgICAgICAgICAgIlkiOiAib3V0cHV0IgogICAgICAgICAgfSwKICAgICAgICAgICJjb25uZWN0aW9ucyI6IHsKICAgICAgICAgICAgIkEiOiBbIDE2LCAxNywgMTgsIDE5LCAyMCwgMjEsIDIyLCAyMywgMjQgXSwKICAgICAgICAgICAgIkIiOiBbICIxIiwgIjEiIF0sCiAgICAgICAgICAgICJZIjogWyAyNiwgMjcsIDI4LCAyOSwgMzAsIDMxLCAzMiwgMzMsIDM0LCAzNSBdCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiJGFuZCRpbnB1dC52OjI4JDUiOiB7CiAgICAgICAgICAiaGlkZV9uYW1lIjogMSwKICAgICAgICAgICJ0eXBlIjogIiRhbmQiLAogICAgICAgICAgInBhcmFtZXRlcnMiOiB7CiAgICAgICAgICAgICJBX1NJR05FRCI6IDAsCiAgICAgICAgICAgICJBX1dJRFRIIjogMSwKICAgICAgICAgICAgIkJfU0lHTkVEIjogMCwKICAgICAgICAgICAgIkJfV0lEVEgiOiAxLAogICAgICAgICAgICAiWV9XSURUSCI6IDEKICAgICAgICAgIH0sCiAgICAgICAgICAiYXR0cmlidXRlcyI6IHsKICAgICAgICAgICAgInNyYyI6ICJpbnB1dC52OjI4IgogICAgICAgICAgfSwKICAgICAgICAgICJwb3J0X2RpcmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogImlucHV0IiwKICAgICAgICAgICAgIkIiOiAiaW5wdXQiLAogICAgICAgICAgICAiWSI6ICJvdXRwdXQiCiAgICAgICAgICB9LAogICAgICAgICAgImNvbm5lY3Rpb25zIjogewogICAgICAgICAgICAiQSI6IFsgMTIgXSwKICAgICAgICAgICAgIkIiOiBbIDM1IF0sCiAgICAgICAgICAgICJZIjogWyAzNiBdCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiJGFuZCRpbnB1dC52OjI5JDYiOiB7CiAgICAgICAgICAiaGlkZV9uYW1lIjogMSwKICAgICAgICAgICJ0eXBlIjogIiRhbmQiLAogICAgICAgICAgInBhcmFtZXRlcnMiOiB7CiAgICAgICAgICAgICJBX1NJR05FRCI6IDAsCiAgICAgICAgICAgICJBX1dJRFRIIjogMSwKICAgICAgICAgICAgIkJfU0lHTkVEIjogMCwKICAgICAgICAgICAgIkJfV0lEVEgiOiAxLAogICAgICAgICAgICAiWV9XSURUSCI6IDEKICAgICAgICAgIH0sCiAgICAgICAgICAiYXR0cmlidXRlcyI6IHsKICAgICAgICAgICAgInNyYyI6ICJpbnB1dC52OjI5IgogICAgICAgICAgfSwKICAgICAgICAgICJwb3J0X2RpcmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogImlucHV0IiwKICAgICAgICAgICAgIkIiOiAiaW5wdXQiLAogICAgICAgICAgICAiWSI6ICJvdXRwdXQiCiAgICAgICAgICB9LAogICAgICAgICAgImNvbm5lY3Rpb25zIjogewogICAgICAgICAgICAiQSI6IFsgMTMgXSwKICAgICAgICAgICAgIkIiOiBbIDM3IF0sCiAgICAgICAgICAgICJZIjogWyAzOCBdCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiJHByb2NkZmYkNDAiOiB7CiAgICAgICAgICAiaGlkZV9uYW1lIjogMSwKICAgICAgICAgICJ0eXBlIjogIiRkZmYiLAogICAgICAgICAgInBhcmFtZXRlcnMiOiB7CiAgICAgICAgICAgICJDTEtfUE9MQVJJVFkiOiAxLAogICAgICAgICAgICAiV0lEVEgiOiA5CiAgICAgICAgICB9LAogICAgICAgICAgImF0dHJpYnV0ZXMiOiB7CiAgICAgICAgICAgICJzcmMiOiAiaW5wdXQudjoxNCIKICAgICAgICAgIH0sCiAgICAgICAgICAicG9ydF9kaXJlY3Rpb25zIjogewogICAgICAgICAgICAiQ0xLIjogImlucHV0IiwKICAgICAgICAgICAgIkQiOiAiaW5wdXQiLAogICAgICAgICAgICAiUSI6ICJvdXRwdXQiCiAgICAgICAgICB9LAogICAgICAgICAgImNvbm5lY3Rpb25zIjogewogICAgICAgICAgICAiQ0xLIjogWyAyIF0sCiAgICAgICAgICAgICJEIjogWyAzOSwgNDAsIDQxLCA0MiwgNDMsIDQ0LCA0NSwgNDYsIDQ3IF0sCiAgICAgICAgICAgICJRIjogWyAxNiwgMTcsIDE4LCAxOSwgMjAsIDIxLCAyMiwgMjMsIDI0IF0KICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgICIkcHJvY2RmZiQ0MSI6IHsKICAgICAgICAgICJoaWRlX25hbWUiOiAxLAogICAgICAgICAgInR5cGUiOiAiJGRmZiIsCiAgICAgICAgICAicGFyYW1ldGVycyI6IHsKICAgICAgICAgICAgIkNMS19QT0xBUklUWSI6IDEsCiAgICAgICAgICAgICJXSURUSCI6IDEKICAgICAgICAgIH0sCiAgICAgICAgICAiYXR0cmlidXRlcyI6IHsKICAgICAgICAgICAgInNyYyI6ICJpbnB1dC52OjE0IgogICAgICAgICAgfSwKICAgICAgICAgICJwb3J0X2RpcmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJDTEsiOiAiaW5wdXQiLAogICAgICAgICAgICAiRCI6ICJpbnB1dCIsCiAgICAgICAgICAgICJRIjogIm91dHB1dCIKICAgICAgICAgIH0sCiAgICAgICAgICAiY29ubmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJDTEsiOiBbIDIgXSwKICAgICAgICAgICAgIkQiOiBbIDM2IF0sCiAgICAgICAgICAgICJRIjogWyAxNCBdCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiJHByb2NkZmYkNDIiOiB7CiAgICAgICAgICAiaGlkZV9uYW1lIjogMSwKICAgICAgICAgICJ0eXBlIjogIiRkZmYiLAogICAgICAgICAgInBhcmFtZXRlcnMiOiB7CiAgICAgICAgICAgICJDTEtfUE9MQVJJVFkiOiAxLAogICAgICAgICAgICAiV0lEVEgiOiAxCiAgICAgICAgICB9LAogICAgICAgICAgImF0dHJpYnV0ZXMiOiB7CiAgICAgICAgICAgICJzcmMiOiAiaW5wdXQudjoxNCIKICAgICAgICAgIH0sCiAgICAgICAgICAicG9ydF9kaXJlY3Rpb25zIjogewogICAgICAgICAgICAiQ0xLIjogImlucHV0IiwKICAgICAgICAgICAgIkQiOiAiaW5wdXQiLAogICAgICAgICAgICAiUSI6ICJvdXRwdXQiCiAgICAgICAgICB9LAogICAgICAgICAgImNvbm5lY3Rpb25zIjogewogICAgICAgICAgICAiQ0xLIjogWyAyIF0sCiAgICAgICAgICAgICJEIjogWyAzOCBdLAogICAgICAgICAgICAiUSI6IFsgMTUgXQogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgIiRwcm9jZGZmJDQzIjogewogICAgICAgICAgImhpZGVfbmFtZSI6IDEsCiAgICAgICAgICAidHlwZSI6ICIkZGZmIiwKICAgICAgICAgICJwYXJhbWV0ZXJzIjogewogICAgICAgICAgICAiQ0xLX1BPTEFSSVRZIjogMSwKICAgICAgICAgICAgIldJRFRIIjogMQogICAgICAgICAgfSwKICAgICAgICAgICJhdHRyaWJ1dGVzIjogewogICAgICAgICAgICAic3JjIjogImlucHV0LnY6MTQiCiAgICAgICAgICB9LAogICAgICAgICAgInBvcnRfZGlyZWN0aW9ucyI6IHsKICAgICAgICAgICAgIkNMSyI6ICJpbnB1dCIsCiAgICAgICAgICAgICJEIjogImlucHV0IiwKICAgICAgICAgICAgIlEiOiAib3V0cHV0IgogICAgICAgICAgfSwKICAgICAgICAgICJjb25uZWN0aW9ucyI6IHsKICAgICAgICAgICAgIkNMSyI6IFsgMiBdLAogICAgICAgICAgICAiRCI6IFsgNDggXSwKICAgICAgICAgICAgIlEiOiBbIDI1IF0KICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgICIkcHJvY211eCQzNiI6IHsKICAgICAgICAgICJoaWRlX25hbWUiOiAxLAogICAgICAgICAgInR5cGUiOiAiJHBtdXgiLAogICAgICAgICAgInBhcmFtZXRlcnMiOiB7CiAgICAgICAgICAgICJTX1dJRFRIIjogMywKICAgICAgICAgICAgIldJRFRIIjogOQogICAgICAgICAgfSwKICAgICAgICAgICJhdHRyaWJ1dGVzIjogewogICAgICAgICAgfSwKICAgICAgICAgICJwb3J0X2RpcmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogImlucHV0IiwKICAgICAgICAgICAgIkIiOiAiaW5wdXQiLAogICAgICAgICAgICAiUyI6ICJpbnB1dCIsCiAgICAgICAgICAgICJZIjogIm91dHB1dCIKICAgICAgICAgIH0sCiAgICAgICAgICAiY29ubmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogWyAxNiwgMTcsIDE4LCAxOSwgMjAsIDIxLCAyMiwgMjMsIDI0IF0sCiAgICAgICAgICAgICJCIjogWyAyNiwgMjcsIDI4LCAyOSwgMzAsIDMxLCAzMiwgMzMsIDM0LCA0OSwgNTAsIDUxLCA1MiwgNTMsIDU0LCA1NSwgNTYsIDU3LCAzLCA0LCA1LCA2LCA3LCA4LCA5LCAxMCwgMTEgXSwKICAgICAgICAgICAgIlMiOiBbIDU4LCA1OSwgNjAgXSwKICAgICAgICAgICAgIlkiOiBbIDM5LCA0MCwgNDEsIDQyLCA0MywgNDQsIDQ1LCA0NiwgNDcgXQogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgIiRwcm9jbXV4JDM3X0NNUDAiOiB7CiAgICAgICAgICAiaGlkZV9uYW1lIjogMSwKICAgICAgICAgICJ0eXBlIjogIiRlcSIsCiAgICAgICAgICAicGFyYW1ldGVycyI6IHsKICAgICAgICAgICAgIkFfU0lHTkVEIjogMCwKICAgICAgICAgICAgIkFfV0lEVEgiOiAyLAogICAgICAgICAgICAiQl9TSUdORUQiOiAwLAogICAgICAgICAgICAiQl9XSURUSCI6IDIsCiAgICAgICAgICAgICJZX1dJRFRIIjogMQogICAgICAgICAgfSwKICAgICAgICAgICJhdHRyaWJ1dGVzIjogewogICAgICAgICAgfSwKICAgICAgICAgICJwb3J0X2RpcmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogImlucHV0IiwKICAgICAgICAgICAgIkIiOiAiaW5wdXQiLAogICAgICAgICAgICAiWSI6ICJvdXRwdXQiCiAgICAgICAgICB9LAogICAgICAgICAgImNvbm5lY3Rpb25zIjogewogICAgICAgICAgICAiQSI6IFsgMTMsIDEyIF0sCiAgICAgICAgICAgICJCIjogWyAiMCIsICIxIiBdLAogICAgICAgICAgICAiWSI6IFsgNTggXQogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgIiRwcm9jbXV4JDM4X0NNUDAiOiB7CiAgICAgICAgICAiaGlkZV9uYW1lIjogMSwKICAgICAgICAgICJ0eXBlIjogIiRlcSIsCiAgICAgICAgICAicGFyYW1ldGVycyI6IHsKICAgICAgICAgICAgIkFfU0lHTkVEIjogMCwKICAgICAgICAgICAgIkFfV0lEVEgiOiAyLAogICAgICAgICAgICAiQl9TSUdORUQiOiAwLAogICAgICAgICAgICAiQl9XSURUSCI6IDIsCiAgICAgICAgICAgICJZX1dJRFRIIjogMQogICAgICAgICAgfSwKICAgICAgICAgICJhdHRyaWJ1dGVzIjogewogICAgICAgICAgfSwKICAgICAgICAgICJwb3J0X2RpcmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogImlucHV0IiwKICAgICAgICAgICAgIkIiOiAiaW5wdXQiLAogICAgICAgICAgICAiWSI6ICJvdXRwdXQiCiAgICAgICAgICB9LAogICAgICAgICAgImNvbm5lY3Rpb25zIjogewogICAgICAgICAgICAiQSI6IFsgMTMsIDEyIF0sCiAgICAgICAgICAgICJCIjogWyAiMSIsICIwIiBdLAogICAgICAgICAgICAiWSI6IFsgNTkgXQogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgIiRwcm9jbXV4JDM5X0NNUDAiOiB7CiAgICAgICAgICAiaGlkZV9uYW1lIjogMSwKICAgICAgICAgICJ0eXBlIjogIiRlcSIsCiAgICAgICAgICAicGFyYW1ldGVycyI6IHsKICAgICAgICAgICAgIkFfU0lHTkVEIjogMCwKICAgICAgICAgICAgIkFfV0lEVEgiOiAyLAogICAgICAgICAgICAiQl9TSUdORUQiOiAwLAogICAgICAgICAgICAiQl9XSURUSCI6IDIsCiAgICAgICAgICAgICJZX1dJRFRIIjogMQogICAgICAgICAgfSwKICAgICAgICAgICJhdHRyaWJ1dGVzIjogewogICAgICAgICAgfSwKICAgICAgICAgICJwb3J0X2RpcmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogImlucHV0IiwKICAgICAgICAgICAgIkIiOiAiaW5wdXQiLAogICAgICAgICAgICAiWSI6ICJvdXRwdXQiCiAgICAgICAgICB9LAogICAgICAgICAgImNvbm5lY3Rpb25zIjogewogICAgICAgICAgICAiQSI6IFsgMTMsIDEyIF0sCiAgICAgICAgICAgICJCIjogWyAiMCIsICIwIiBdLAogICAgICAgICAgICAiWSI6IFsgNjAgXQogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgIiRyZWR1Y2VfeG9yJGlucHV0LnY6MjckNCI6IHsKICAgICAgICAgICJoaWRlX25hbWUiOiAxLAogICAgICAgICAgInR5cGUiOiAiJHJlZHVjZV94b3IiLAogICAgICAgICAgInBhcmFtZXRlcnMiOiB7CiAgICAgICAgICAgICJBX1NJR05FRCI6IDAsCiAgICAgICAgICAgICJBX1dJRFRIIjogOSwKICAgICAgICAgICAgIllfV0lEVEgiOiAxCiAgICAgICAgICB9LAogICAgICAgICAgImF0dHJpYnV0ZXMiOiB7CiAgICAgICAgICAgICJzcmMiOiAiaW5wdXQudjoyNyIKICAgICAgICAgIH0sCiAgICAgICAgICAicG9ydF9kaXJlY3Rpb25zIjogewogICAgICAgICAgICAiQSI6ICJpbnB1dCIsCiAgICAgICAgICAgICJZIjogIm91dHB1dCIKICAgICAgICAgIH0sCiAgICAgICAgICAiY29ubmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogWyAzOSwgNDAsIDQxLCA0MiwgNDMsIDQ0LCA0NSwgNDYsIDQ3IF0sCiAgICAgICAgICAgICJZIjogWyA0OCBdCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiJHN1YiRpbnB1dC52OjE2JDIiOiB7CiAgICAgICAgICAiaGlkZV9uYW1lIjogMSwKICAgICAgICAgICJ0eXBlIjogIiRzdWIiLAogICAgICAgICAgInBhcmFtZXRlcnMiOiB7CiAgICAgICAgICAgICJBX1NJR05FRCI6IDAsCiAgICAgICAgICAgICJBX1dJRFRIIjogOSwKICAgICAgICAgICAgIkJfU0lHTkVEIjogMCwKICAgICAgICAgICAgIkJfV0lEVEgiOiAzLAogICAgICAgICAgICAiWV9XSURUSCI6IDEwCiAgICAgICAgICB9LAogICAgICAgICAgImF0dHJpYnV0ZXMiOiB7CiAgICAgICAgICAgICJzcmMiOiAiaW5wdXQudjoxNiIKICAgICAgICAgIH0sCiAgICAgICAgICAicG9ydF9kaXJlY3Rpb25zIjogewogICAgICAgICAgICAiQSI6ICJpbnB1dCIsCiAgICAgICAgICAgICJCIjogImlucHV0IiwKICAgICAgICAgICAgIlkiOiAib3V0cHV0IgogICAgICAgICAgfSwKICAgICAgICAgICJjb25uZWN0aW9ucyI6IHsKICAgICAgICAgICAgIkEiOiBbIDE2LCAxNywgMTgsIDE5LCAyMCwgMjEsIDIyLCAyMywgMjQgXSwKICAgICAgICAgICAgIkIiOiBbICIxIiwgIjAiLCAiMSIgXSwKICAgICAgICAgICAgIlkiOiBbIDQ5LCA1MCwgNTEsIDUyLCA1MywgNTQsIDU1LCA1NiwgNTcsIDM3IF0KICAgICAgICAgIH0KICAgICAgICB9CiAgICAgIH0sCiAgICAgICJuZXRuYW1lcyI6IHsKICAgICAgICAiJDBcXGJvcnJvd19vdXRbMDowXSI6IHsKICAgICAgICAgICJoaWRlX25hbWUiOiAxLAogICAgICAgICAgImJpdHMiOiBbIDM4IF0sCiAgICAgICAgICAiYXR0cmlidXRlcyI6IHsKICAgICAgICAgICAgInNyYyI6ICJpbnB1dC52OjE0IgogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgIiQwXFxjYXJyeV9vdXRbMDowXSI6IHsKICAgICAgICAgICJoaWRlX25hbWUiOiAxLAogICAgICAgICAgImJpdHMiOiBbIDM2IF0sCiAgICAgICAgICAiYXR0cmlidXRlcyI6IHsKICAgICAgICAgICAgInNyYyI6ICJpbnB1dC52OjE0IgogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgIiQwXFxjbnRfZG5bOTowXSI6IHsKICAgICAgICAgICJoaWRlX25hbWUiOiAxLAogICAgICAgICAgImJpdHMiOiBbIDQ5LCA1MCwgNTEsIDUyLCA1MywgNTQsIDU1LCA1NiwgNTcsIDM3IF0sCiAgICAgICAgICAiYXR0cmlidXRlcyI6IHsKICAgICAgICAgICAgInNyYyI6ICJpbnB1dC52OjE0IgogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgIiQwXFxjbnRfdXBbOTowXSI6IHsKICAgICAgICAgICJoaWRlX25hbWUiOiAxLAogICAgICAgICAgImJpdHMiOiBbIDI2LCAyNywgMjgsIDI5LCAzMCwgMzEsIDMyLCAzMywgMzQsIDM1IF0sCiAgICAgICAgICAiYXR0cmlidXRlcyI6IHsKICAgICAgICAgICAgInNyYyI6ICJpbnB1dC52OjE0IgogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgIiQwXFxjb3VudF9vdXRbODowXSI6IHsKICAgICAgICAgICJoaWRlX25hbWUiOiAxLAogICAgICAgICAgImJpdHMiOiBbIDM5LCA0MCwgNDEsIDQyLCA0MywgNDQsIDQ1LCA0NiwgNDcgXSwKICAgICAgICAgICJhdHRyaWJ1dGVzIjogewogICAgICAgICAgICAic3JjIjogImlucHV0LnY6MTQiCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiJDBcXHBhcml0eV9vdXRbMDowXSI6IHsKICAgICAgICAgICJoaWRlX25hbWUiOiAxLAogICAgICAgICAgImJpdHMiOiBbIDQ4IF0sCiAgICAgICAgICAiYXR0cmlidXRlcyI6IHsKICAgICAgICAgICAgInNyYyI6ICJpbnB1dC52OjE0IgogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgIiRwcm9jbXV4JDM3X0NNUCI6IHsKICAgICAgICAgICJoaWRlX25hbWUiOiAxLAogICAgICAgICAgImJpdHMiOiBbIDU4IF0sCiAgICAgICAgICAiYXR0cmlidXRlcyI6IHsKICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgICIkcHJvY211eCQzOF9DTVAiOiB7CiAgICAgICAgICAiaGlkZV9uYW1lIjogMSwKICAgICAgICAgICJiaXRzIjogWyA1OSBdLAogICAgICAgICAgImF0dHJpYnV0ZXMiOiB7CiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiJHByb2NtdXgkMzlfQ01QIjogewogICAgICAgICAgImhpZGVfbmFtZSI6IDEsCiAgICAgICAgICAiYml0cyI6IFsgNjAgXSwKICAgICAgICAgICJhdHRyaWJ1dGVzIjogewogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgImJvcnJvd19vdXQiOiB7CiAgICAgICAgICAiaGlkZV9uYW1lIjogMCwKICAgICAgICAgICJiaXRzIjogWyAxNSBdLAogICAgICAgICAgImF0dHJpYnV0ZXMiOiB7CiAgICAgICAgICAgICJzcmMiOiAiaW5wdXQudjo5IgogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgImNhcnJ5X291dCI6IHsKICAgICAgICAgICJoaWRlX25hbWUiOiAwLAogICAgICAgICAgImJpdHMiOiBbIDE0IF0sCiAgICAgICAgICAiYXR0cmlidXRlcyI6IHsKICAgICAgICAgICAgInNyYyI6ICJpbnB1dC52OjkiCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiY2xvY2siOiB7CiAgICAgICAgICAiaGlkZV9uYW1lIjogMCwKICAgICAgICAgICJiaXRzIjogWyAyIF0sCiAgICAgICAgICAiYXR0cmlidXRlcyI6IHsKICAgICAgICAgICAgInNyYyI6ICJpbnB1dC52OjYiCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiY291bnRfb3V0IjogewogICAgICAgICAgImhpZGVfbmFtZSI6IDAsCiAgICAgICAgICAiYml0cyI6IFsgMTYsIDE3LCAxOCwgMTksIDIwLCAyMSwgMjIsIDIzLCAyNCBdLAogICAgICAgICAgImF0dHJpYnV0ZXMiOiB7CiAgICAgICAgICAgICJzcmMiOiAiaW5wdXQudjo4IgogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgImRhdGFfaW4iOiB7CiAgICAgICAgICAiaGlkZV9uYW1lIjogMCwKICAgICAgICAgICJiaXRzIjogWyAzLCA0LCA1LCA2LCA3LCA4LCA5LCAxMCwgMTEgXSwKICAgICAgICAgICJhdHRyaWJ1dGVzIjogewogICAgICAgICAgICAic3JjIjogImlucHV0LnY6NSIKICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgICJkb3duIjogewogICAgICAgICAgImhpZGVfbmFtZSI6IDAsCiAgICAgICAgICAiYml0cyI6IFsgMTMgXSwKICAgICAgICAgICJhdHRyaWJ1dGVzIjogewogICAgICAgICAgICAic3JjIjogImlucHV0LnY6NiIKICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgICJwYXJpdHlfb3V0IjogewogICAgICAgICAgImhpZGVfbmFtZSI6IDAsCiAgICAgICAgICAiYml0cyI6IFsgMjUgXSwKICAgICAgICAgICJhdHRyaWJ1dGVzIjogewogICAgICAgICAgICAic3JjIjogImlucHV0LnY6OSIKICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgICJ1cCI6IHsKICAgICAgICAgICJoaWRlX25hbWUiOiAwLAogICAgICAgICAgImJpdHMiOiBbIDEyIF0sCiAgICAgICAgICAiYXR0cmlidXRlcyI6IHsKICAgICAgICAgICAgInNyYyI6ICJpbnB1dC52OjYiCiAgICAgICAgICB9CiAgICAgICAgfQogICAgICB9CiAgICB9CiAgfQp9","base64");
+const digital = "<svg  xmlns=\"http://www.w3.org/2000/svg\"\n  xmlns:xlink=\"http://www.w3.org/1999/xlink\"\n  xmlns:s=\"https://github.com/nturley/netlistsvg\"\n  width=\"800\" height=\"500\">\n  <s:properties>\n    <s:layoutEngine\n      org.eclipse.elk.layered.spacing.nodeNodeBetweenLayers=\"35\"\n      org.eclipse.elk.spacing.nodeNode= \"35\"\n      org.eclipse.elk.layered.layering.strategy= \"LONGEST_PATH\"\n    />\n    <s:low_priority_alias val=\"$dff\" />\n  </s:properties>\n<style>\nsvg {\n  stroke:#000;\n  fill:none;\n}\ntext {\n  fill:#000;\n  stroke:none;\n  font-size:10px;\n  font-weight: bold;\n  font-family: \"Courier New\", monospace;\n}\nline {\n    stroke-linecap: round;\n}\n.nodelabel {\n  text-anchor: middle;\n}\n.inputPortLabel {\n  text-anchor: end;\n}\n.splitjoinBody {\n  fill:#000;\n}\n</style>\n\n  <g s:type=\"mux\" transform=\"translate(50, 50)\" s:width=\"20\" s:height=\"40\">\n    <s:alias val=\"$pmux\"/>\n    <s:alias val=\"$mux\"/>\n    <s:alias val=\"$_MUX_\"/>\n\n    <path d=\"M0,0 L20,10 L20,30 L0,40 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <text x=\"5\" y=\"32\" class=\"nodelabel $cell_id\" s:attribute=\"\">1</text>\n    <text x=\"5\" y=\"13\" class=\"nodelabel $cell_id\" s:attribute=\"\">0</text>\n    <g s:x=\"0\" s:y=\"10\" s:pid=\"A\"/>\n    <g s:x=\"0\" s:y=\"30\" s:pid=\"B\"/>\n    <g s:x=\"10\" s:y=\"35\" s:pid=\"S\"/>\n    <g s:x=\"20\" s:y=\"20\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"mux-bus\" transform=\"translate(100, 50)\" s:width=\"24\" s:height=\"40\">\n    <s:alias val=\"$pmux-bus\"/>\n    <s:alias val=\"$mux-bus\"/>\n    <s:alias val=\"$_MUX_-bus\"/>\n\n    <path d=\"M0,0 L20,10 L20,30 L0,40 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M4,2 L4,0 L22,9 L22,31 L4,40 L4,38\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M8,2 L8,0 L24,8 L24,32 L8,40 L8,38\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <text x=\"5\" y=\"32\" class=\"nodelabel $cell_id\" s:attribute=\"\">1</text>\n    <text x=\"5\" y=\"13\" class=\"nodelabel $cell_id\" s:attribute=\"\">0</text>\n    <g s:x=\"-1\" s:y=\"10\" s:pid=\"A\"/>\n    <g s:x=\"-1\" s:y=\"30\" s:pid=\"B\"/>\n    <g s:x=\"12\" s:y=\"38\" s:pid=\"S\"/>\n    <g s:x=\"24.5\" s:y=\"20\" s:pid=\"Y\"/>\n  </g>\n\n  <!-- and -->\n  <g s:type=\"and\" transform=\"translate(150,50)\" s:width=\"30\" s:height=\"25\">\n    <s:alias val=\"$and\"/>\n    <s:alias val=\"$logic_and\"/>\n    <s:alias val=\"$_AND_\"/>\n    <s:alias val=\"$reduce_and\"/>\n\n    <path d=\"M0,0 L0,25 L15,25 A15 12.5 0 0 0 15,0 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"0\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"0\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"30\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n  <g s:type=\"nand\" transform=\"translate(150,100)\" s:width=\"30\" s:height=\"25\">\n    <s:alias val=\"$nand\"/>\n    <s:alias val=\"$logic_nand\"/>\n    <s:alias val=\"$_NAND_\"/>\n\n    <path d=\"M0,0 L0,25 L15,25 A15 12.5 0 0 0 15,0 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <circle cx=\"34\" cy=\"12.5\" r=\"3\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"0\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"0\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"36\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n  <g s:type=\"andnot\" transform=\"translate(200,50)\" s:width=\"30\" s:height=\"25\">\n    <s:alias val=\"$_ANDNOT_\"/>\n\n    <path d=\"M0,0 L0,25 L15,25 A15 12.5 0 0 0 15,0 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <circle cx=\"-3\" cy=\"20\" r=\"3\"/>\n\n    <g s:x=\"0\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"-6\" s:y=\"20\" s:pid=\"B\"/>\n    <!-- <path d=\"M -10,20 L -6,20\"/> -->\n    <g s:x=\"30\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <!-- or -->\n  <g s:type=\"or\" transform=\"translate(250,50)\" s:width=\"30\" s:height=\"25\">\n    <s:alias val=\"$or\"/>\n    <s:alias val=\"$logic_or\"/>\n    <s:alias val=\"$_OR_\"/>\n    <s:alias val=\"$reduce_or\"/>\n    <s:alias val=\"$reduce_bool\"/>\n\n    <path d=\"M0,0 A30 25 0 0 1 0,25 A30 25 0 0 0 30,12.5 A30 25 0 0 0 0,0\" fill=\"#ffffff\" class=\"$cell_id\"/>\n \n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"30\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n  <g s:type=\"reduce_nor\" transform=\"translate(250, 100)\" s:width=\"33\" s:height=\"25\">\n    <s:alias val=\"$nor\"/>\n    <s:alias val=\"$reduce_nor\"/>\n    <s:alias val=\"$_NOR_\"/>\n    <s:alias val=\"$_ORNOT_\"/>\n\n    <path d=\"M0,0 A30 25 0 0 1 0,25 A30 25 0 0 0 30,12.5 A30 25 0 0 0 0,0\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <circle cx=\"33\" cy=\"12.5\" r=\"3\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"36\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n  <g s:type=\"ornot\" transform=\"translate(300,50)\" s:width=\"30\" s:height=\"25\">\n    <s:alias val=\"$_ORNOT_\"/>\n\n    <path d=\"M0,0 A30 25 0 0 1 0,25 A30 25 0 0 0 30,12.5 A30 25 0 0 0 0,0\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <circle cx=\"-1\" cy=\"20\" r=\"3\"/>\n \n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"-4\" s:y=\"20\" s:pid=\"B\"/>\n    <!-- <path d=\"M -8,20 L -4,20\"/> -->\n    <g s:x=\"30\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <!--xor -->\n  <g s:type=\"reduce_xor\" transform=\"translate(350, 50)\" s:width=\"33\" s:height=\"25\">\n    <s:alias val=\"$xor\"/>\n    <s:alias val=\"$reduce_xor\"/>\n    <s:alias val=\"$_XOR_\"/>\n\n    <path d=\"M3,0 A30 25 0 0 1 3,25 A30 25 0 0 0 33,12.5 A30 25 0 0 0 3,0\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M0,0 A30 25 0 0 1 0,25\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"33\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"reduce_nxor\" transform=\"translate(350, 100)\" s:width=\"33\" s:height=\"25\">\n    <s:alias val=\"$xnor\"/>\n    <s:alias val=\"$reduce_xnor\"/>\n    <s:alias val=\"$_XNOR_\"/>\n\n    <path d=\"M3,0 A30 25 0 0 1 3,25 A30 25 0 0 0 33,12.5 A30 25 0 0 0 3,0\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M0,0 A30 25 0 0 1 0,25\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <circle cx=\"36\" cy=\"12.5\" r=\"3\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"38\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"tribuf\" transform=\"translate(550, 50)\" s:width=\"15\" s:height=\"30\">\n    <s:alias val=\"$tribuf\"/>\n    <s:alias val=\"$_TRIBUF_\"/>\n\n    <s:alias val=\"tribuf-bus\"/>\n    <s:alias val=\"$tribuf-bus\"/>\n    <s:alias val=\"$_TRIBUF_-bus\"/>\n\n    <path d=\"M0,0 L25,15 L0,30 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"0\" s:y=\"15\" s:pid=\"A\"/>\n    <g s:x=\"11\" s:y=\"6\" s:pid=\"EN\"/>\n    <g s:x=\"25\" s:y=\"15\" s:pid=\"Y\"/>\n    <!-- <path d=\"M -5,15 L 0,15\" /> -->\n    <!-- <path d=\"M 11,0 L 11,6\" /> -->\n    <!-- <path d=\"M 30,15 L 25,15\" /> -->\n  </g>\n\n  <!--buffer -->\n  <g s:type=\"not\" transform=\"translate(450,100)\" s:width=\"30\" s:height=\"20\">\n    <s:alias val=\"$_NOT_\"/>\n    <s:alias val=\"$not\"/>\n    <s:alias val=\"$logic_not\"/>\n\n    <path d=\"M0,0 L0,20 L20,10 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <circle cx=\"24\" cy=\"10\" r=\"3\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"-1\" s:y=\"10\" s:pid=\"A\"/>\n    <g s:x=\"27\" s:y=\"10\" s:pid=\"Y\"/>\n  </g>\n  <g s:type=\"buf\" transform=\"translate(450,50)\" s:width=\"30\" s:height=\"20\">\n    <s:alias val=\"$_BUF_\"/>\n\n    <path d=\"M0,0 L0,20 L20,10 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"0\" s:y=\"10\" s:pid=\"A\"/>\n    <g s:x=\"20\" s:y=\"10\" s:pid=\"Y\"/>\n    <!-- <path d=\"M -5,10 L 0,10\"/> -->\n    <!-- <path d=\"M 25,10 L 20,10\"/> -->\n  </g>\n\n  <g s:type=\"add\" transform=\"translate(50, 150)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$add\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"7.5\" x2=\"17.5\" y1=\"12.5\" y2=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"12.5\" x2=\"12.5\" y1=\"7.5\" y2=\"17.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"26\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"pos\" transform=\"translate(100, 150)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$pos\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"7.5\" x2=\"17.5\" y1=\"12.5\" y2=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"12.5\" x2=\"12.5\" y1=\"7.5\" y2=\"17.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"-1\" s:y=\"12.5\" s:pid=\"A\"/>\n    <g s:x=\"26\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"sub\" transform=\"translate(150,150)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$sub\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"7.5\" x2=\"17.5\" y1=\"12.5\" y2=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"neg\" transform=\"translate(200,150)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$neg\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"7.5\" x2=\"17.5\" y1=\"12.5\" y2=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"0\" s:y=\"12.5\" s:pid=\"A\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"eq\" transform=\"translate(250,150)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$eq\"/>\n    <s:alias val=\"$eqx\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"7.5\" x2=\"17.5\" y1=\"10\" y2=\"10\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"7.5\" x2=\"17.5\" y1=\"15\" y2=\"15\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"mul\" transform=\"translate(300, 150)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$mul\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"7.5\"  x2=\"17.5\" y1=\"7.5\" y2=\"17.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"17.5\" x2=\"7.5\"  y1=\"7.5\" y2=\"17.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"26\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"div\" transform=\"translate(350, 150)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$div\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"15\" x2=\"10\"  y1=\"7.5\" y2=\"17.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"26\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"mod\" transform=\"translate(400, 150)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$mod\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"15\" x2=\"10\"  y1=\"7.5\" y2=\"17.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <circle r=\"2\" cx=\"8\" cy=\"9\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <circle r=\"2\" cx=\"17\" cy=\"16\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"26\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"pow\" transform=\"translate(450, 150)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$pow\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"10\" x2=\"12.5\"  y1=\"12\" y2=\"6\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"15\" x2=\"12.5\"  y1=\"12\" y2=\"6\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"26\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"ne\" transform=\"translate(500,150)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$ne\"/>\n    <s:alias val=\"$nex\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"7.5\" x2=\"17.5\" y1=\"10\" y2=\"10\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"7.5\" x2=\"17.5\" y1=\"15\" y2=\"15\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"9\" x2=\"16\" y1=\"18\" y2=\"7\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"lt\" transform=\"translate(50,200)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$lt\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"6\" x2=\"17\" y1=\"12\"  y2=\"7\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"6\" x2=\"17\" y1=\"12\" y2=\"17\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"le\" transform=\"translate(100,200)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$le\"/>\n\n    <circle r=\"12.5\" cx=\"12.5\" cy=\"12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"6\" x2=\"17\" y1=\"11\"  y2=\"6\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"6\" x2=\"17\" y1=\"11\" y2=\"16\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"6\" x2=\"17\" y1=\"14\" y2=\"19\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"ge\" transform=\"translate(150,200)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$ge\"/>\n\n    <circle r=\"12\" cx=\"12\" cy=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"8\" x2=\"19\"  y1=\"6\" y2=\"11\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"8\" x2=\"19\" y1=\"16\" y2=\"11\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"8\" x2=\"19\" y1=\"19\" y2=\"14\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"gt\" transform=\"translate(200,200)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$gt\"/>\n\n    <circle r=\"12\" cx=\"12\" cy=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"8\" x2=\"19\"  y1=\"7\" y2=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"8\" x2=\"19\" y1=\"17\" y2=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"shr\" transform=\"translate(250,200)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$shr\"/>\n\n    <circle r=\"12\" cx=\"12\" cy=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"8\" x2=\"13\"  y1=\"7\"  y2=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"8\" x2=\"13\"  y1=\"17\" y2=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"14\" x2=\"19\" y1=\"7\"  y2=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"14\" x2=\"19\" y1=\"17\" y2=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"shl\" transform=\"translate(300,200)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$shl\"/>\n\n    <circle r=\"12\" cx=\"12\" cy=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"6\" x2=\"11\"  y1=\"12\" y2=\"7\"  fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"6\" x2=\"11\"  y1=\"12\" y2=\"17\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"12\" x2=\"17\" y1=\"12\" y2=\"7\"  fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"12\" x2=\"17\" y1=\"12\" y2=\"17\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"sshr\" transform=\"translate(350,200)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$sshr\"/>\n\n    <circle r=\"12\" cx=\"12\" cy=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"5\"  x2=\"10\" y1=\"7\"  y2=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"5\"  x2=\"10\" y1=\"17\" y2=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"11\" x2=\"16\" y1=\"7\"  y2=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"11\" x2=\"16\" y1=\"17\" y2=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"17\" x2=\"22\" y1=\"7\"  y2=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"17\" x2=\"22\" y1=\"17\" y2=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"sshl\" transform=\"translate(400,200)\" s:width=\"25\" s:height=\"25\">\n    <s:alias val=\"$sshl\"/>\n\n    <circle r=\"12\" cx=\"12\" cy=\"12\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"3\"  x2=\"8\"   y1=\"12\" y2=\"7\"  fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"3\"  x2=\"8\"   y1=\"12\" y2=\"17\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"9\"  x2=\"14\" y1=\"12\" y2=\"7\"  fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"9\"  x2=\"14\" y1=\"12\" y2=\"17\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"15\" x2=\"20\" y1=\"12\" y2=\"7\"  fill=\"#ffffff\" class=\"$cell_id\"/>\n    <line x1=\"15\" x2=\"20\" y1=\"12\" y2=\"17\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\" s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\" s:pid=\"B\"/>\n    <g s:x=\"25\" s:y=\"12.5\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"inputExt\" transform=\"translate(50,250)\" s:width=\"30\" s:height=\"20\">\n    <text x=\"15\" y=\"-4\" class=\"nodelabel $cell_id\" s:attribute=\"ref\">input</text>\n    <s:alias val=\"$_inputExt_\"/>\n    <path d=\"M0,0 L0,20 L15,20 L30,10 L15,0 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <g s:x=\"30\" s:y=\"10\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"constant\" transform=\"translate(150,250)\" s:width=\"30\" s:height=\"20\">\n    <text x=\"15\" y=\"-4\" class=\"nodelabel $cell_id\" s:attribute=\"ref\">constant</text>\n\n    <s:alias val=\"$_constant_\"/>\n    <rect width=\"30\" height=\"20\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"31\" s:y=\"10\" s:pid=\"Y\"/>\n  </g>\n\n  <g s:type=\"outputExt\" transform=\"translate(250,250)\" s:width=\"30\" s:height=\"20\">\n    <text x=\"15\" y=\"-4\" class=\"nodelabel $cell_id\" s:attribute=\"ref\">output</text>\n    <s:alias val=\"$_outputExt_\"/>\n    <path d=\"M30,0 L30,20 L15,20 L0,10 L15,0 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"0\" s:y=\"10\" s:pid=\"A\"/>\n  </g>\n\n  <g s:type=\"split\" transform=\"translate(350,250)\" s:width=\"5\" s:height=\"40\">\n    <rect width=\"5\" height=\"40\" class=\"splitjoinBody\" s:generic=\"body\"/>\n    <s:alias val=\"$_split_\"/>\n\n    <g s:x=\"0\" s:y=\"20\" s:pid=\"in\"/>\n    <g transform=\"translate(5, 10)\" s:x=\"4\" s:y=\"10\" s:pid=\"out0\">\n      <text x=\"5\" y=\"-4\">hi:lo</text>\n    </g>\n    <g transform=\"translate(5, 30)\" s:x=\"4\" s:y=\"30\" s:pid=\"out1\">\n      <text x=\"5\" y=\"-4\">hi:lo</text>\n    </g>\n  </g>\n\n  <g s:type=\"join\" transform=\"translate(450,250)\" s:width=\"4\" s:height=\"40\">\n    <rect width=\"5\" height=\"40\" class=\"splitjoinBody\" s:generic=\"body\"/>\n    <s:alias val=\"$_join_\"/>\n    <g s:x=\"5\" s:y=\"20\"  s:pid=\"out\"/>\n    <g transform=\"translate(0, 10)\" s:x=\"0\" s:y=\"10\" s:pid=\"in0\">\n      <text x=\"-3\" y=\"-4\" class=\"inputPortLabel\">hi:lo</text>\n    </g>\n    <g transform=\"translate(0, 30)\" s:x=\"0\" s:y=\"30\" s:pid=\"in1\">\n      <text x=\"-3\" y=\"-4\" class=\"inputPortLabel\">hi:lo</text>\n    </g>\n  </g>\n\n  <g s:type=\"dff\" transform=\"translate(50,300)\" s:width=\"30\" s:height=\"40\">\n    <s:alias val=\"$dff\"/>\n    <s:alias val=\"$_DFF_\"/>\n    <s:alias val=\"$_DFF_P_\"/>\n\n    <s:alias val=\"$adff\"/>\n    <s:alias val=\"$_DFF_\"/>\n    <s:alias val=\"$_DFF_P_\"/>\n\n    <s:alias val=\"$sdff\"/>\n    <s:alias val=\"$_DFF_\"/>\n    <s:alias val=\"$_DFF_P_\"/>\n\n    <rect width=\"30\" height=\"40\" x=\"0\" y=\"0\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M0,35 L5,30 L0,25\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"31\" s:y=\"10\" s:pid=\"Q\"/>\n    <g s:x=\"-1\" s:y=\"30\" s:pid=\"CLK\"/>\n    <g s:x=\"-1\" s:y=\"30\" s:pid=\"C\"/>\n    <g s:x=\"-1\" s:y=\"10\" s:pid=\"D\"/>\n    <g s:x=\"15\" s:y=\"40\" s:pid=\"ARST\"/>\n    <g s:x=\"15\" s:y=\"40\" s:pid=\"SRST\"/>\n  </g>\n\n  <g s:type=\"dff-bus\" transform=\"translate(100,300)\" s:width=\"34\" s:height=\"44\">\n    <s:alias val=\"$dff-bus\"/>\n    <s:alias val=\"$_DFF_-bus\"/>\n    <s:alias val=\"$_DFF_P_-bus\"/>\n\n    <s:alias val=\"adff-bus\"/>\n    <s:alias val=\"$adff-bus\"/>\n    <s:alias val=\"$_DFF_-bus\"/>\n    <s:alias val=\"$_DFF_P_-bus\"/>\n\n    <s:alias val=\"sdff-bus\"/>\n    <s:alias val=\"$sdff-bus\"/>\n    <s:alias val=\"$_DFF_-bus\"/>\n    <s:alias val=\"$_DFF_P_-bus\"/>\n\n    <rect width=\"30\" height=\"40\" x=\"0\" y=\"0\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M0,35 L5,30 L0,25\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M30,2 L32,2 L32,42 L2,42 L2,40\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M32,4 L34,4 L34,44 L4,44 L4,42\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"35\" s:y=\"10\" s:pid=\"Q\"/>\n    <g s:x=\"-1\" s:y=\"30\" s:pid=\"CLK\"/>\n    <g s:x=\"-1\" s:y=\"30\" s:pid=\"C\"/>\n    <g s:x=\"-1\" s:y=\"10\" s:pid=\"D\"/>\n    <g s:x=\"17\" s:y=\"44\" s:pid=\"ARST\"/>\n    <g s:x=\"17\" s:y=\"44\" s:pid=\"SRST\"/>\n  </g>\n\n  <g s:type=\"dffn\" transform=\"translate(150,300)\" s:width=\"30\" s:height=\"40\">\n    <s:alias val=\"$dffn\"/>\n    <s:alias val=\"$_DFF_N_\"/>\n\n    <rect width=\"30\" height=\"40\" x=\"0\" y=\"0\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M0,35 L5,30 L0,25\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <circle cx=\"-3\" cy=\"30\" r=\"3\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"30\" s:y=\"10\" s:pid=\"Q\"/>\n    <g s:x=\"-6\" s:y=\"30\" s:pid=\"CLK\"/>\n    <g s:x=\"-6\" s:y=\"30\" s:pid=\"C\"/>\n    <g s:x=\"0\" s:y=\"10\" s:pid=\"D\"/>\n  </g>\n\n  <g s:type=\"dffn-bus\" transform=\"translate(200,300)\" s:width=\"30\" s:height=\"40\">\n    <s:alias val=\"$dffn-bus\"/>\n    <s:alias val=\"$_DFF_N_-bus\"/>\n\n    <rect width=\"30\" height=\"40\" x=\"0\" y=\"0\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M0,35 L5,30 L0,25\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <circle cx=\"-3\" cy=\"30\" r=\"3\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M30,2 L32,2 L32,42 L2,42 L2,40\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M32,4 L34,4 L34,44 L4,44 L4,42\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"35\" s:y=\"10\" s:pid=\"Q\"/>\n    <g s:x=\"-6\" s:y=\"30\" s:pid=\"CLK\"/>\n    <g s:x=\"-6\" s:y=\"30\" s:pid=\"C\"/>\n    <g s:x=\"0\" s:y=\"10\" s:pid=\"D\"/>\n  </g>\n\n  <g s:type=\"dlatch\" transform=\"translate(250,300)\" s:width=\"30\" s:height=\"40\">\n    <s:alias val=\"$dlatch\"/>\n    <s:alias val=\"$_DLATCH_\"/>\n    <s:alias val=\"adlatch\"/>\n    <s:alias val=\"$adlatch\"/>\n\n    <rect width=\"30\" height=\"40\" x=\"0\" y=\"0\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <path d=\"M 1,35 H 4 V 25 h 5 v 10 h 3\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"30\" s:y=\"10\" s:pid=\"Q\"/>\n    <g s:x=\"0\" s:y=\"10\" s:pid=\"D\"/>\n    <g s:x=\"-1\" s:y=\"30\" s:pid=\"EN\"/>\n    <g s:x=\"15\" s:y=\"40\" s:pid=\"ARST\"/>\n  </g>\n\n  <g s:type=\"dlatch-bus\" transform=\"translate(300,300)\" s:width=\"30\" s:height=\"40\">\n    <s:alias val=\"$dlatch-bus\"/>\n    <s:alias val=\"$_DLATCH_-bus\"/>\n    <s:alias val=\"adlatch-bus\"/>\n    <s:alias val=\"$adlatch-bus\"/>\n\n    <rect width=\"30\" height=\"40\" x=\"0\" y=\"0\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <path d=\"M 1,35 H 4 V 25 h 5 v 10 h 3\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M30,2 L32,2 L32,42 L2,42 L2,40\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M32,4 L34,4 L34,44 L4,44 L4,42\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"35\" s:y=\"10\" s:pid=\"Q\"/>\n    <g s:x=\"0\" s:y=\"10\" s:pid=\"D\"/>\n    <g s:x=\"-1\" s:y=\"30\" s:pid=\"EN\"/>\n    <g s:x=\"17\" s:y=\"44\" s:pid=\"ARST\"/>\n  </g>\n\n  <g s:type=\"dlatchn\" transform=\"translate(350,300)\" s:width=\"30\" s:height=\"40\">\n    <s:alias val=\"$dlatchn\"/>\n    <s:alias val=\"$_DLATCH_N_\"/>\n\n    <rect width=\"30\" height=\"40\" x=\"0\" y=\"0\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <path d=\"M 1,25 H 4 V 35 H 9 V 25 h 3\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"30\" s:y=\"10\" s:pid=\"Q\"/>\n    <g s:x=\"0\" s:y=\"10\" s:pid=\"D\"/>\n    <g s:x=\"-1\" s:y=\"30\" s:pid=\"EN\"/>\n  </g>\n\n  <g s:type=\"dlatchn-bus\" transform=\"translate(400,300)\" s:width=\"30\" s:height=\"40\">\n    <s:alias val=\"$dlatchn-bus\"/>\n    <s:alias val=\"$_DLATCH_N_-bus\"/>\n\n    <rect width=\"30\" height=\"40\" x=\"0\" y=\"0\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <path d=\"M 1,25 H 4 V 35 H 9 V 25 h 3\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M30,2 L32,2 L32,42 L2,42 L2,40\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M32,4 L34,4 L34,44 L4,44 L4,42\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"35\" s:y=\"10\" s:pid=\"Q\"/>\n    <g s:x=\"0\" s:y=\"10\" s:pid=\"D\"/>\n    <g s:x=\"-1\" s:y=\"30\" s:pid=\"EN\"/>\n  </g>\n\n  <g s:type=\"_AOI3_\" transform=\"translate(50, 400)\" s:width=\"66\" s:height=\"40\">\n    <s:alias val=\"$_AOI3_\"/>\n\n    <path d=\"M0,0 L0,25 L15,25 A15 12.5 0 0 0 15,0 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M30,13 A30 25 0 0 1 30,38 A30 25 0 0 0 60,25.5 A30 25 0 0 0 30,13\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <circle cx=\"63\" cy=\"25.5\" r=\"3\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M0,32 L33,32\" />\n    <g s:x=\"0\" s:y=\"5\"  s:pid=\"A\"/>\n    <g s:x=\"0\" s:y=\"20\"  s:pid=\"B\"/>\n    <g s:x=\"0\" s:y=\"32\"  s:pid=\"C\"/>\n    <g s:x=\"66\" s:y=\"25.5\" s:pid=\"Y\"/>\n    <!-- <path d=\"M-5,5 L0,5\"/> -->\n    <!-- <path d=\"M-5,20 L0,20\"/> -->\n    <!-- <path d=\"M-5,32 L0,32\"/> -->\n    <!-- <path d=\"M 70,25.5 L 66,25.5\"/> -->\n  </g>\n\n  <g s:type=\"_OAI3_\" transform=\"translate(150, 400)\" s:width=\"66\" s:height=\"40\">\n    <s:alias val=\"$_OAI3_\"/>\n\n    <path d=\"M30,13 L30,38 L45,38 A15 12.5 0 0 0 45,13 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M0,0 A30 25 0 0 1 0,25 A30 25 0 0 0 30,12.5 A30 25 0 0 0 0,0\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <circle cx=\"63\" cy=\"25.5\" r=\"3\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M0,32 L30,32\" />\n\n    <g s:x=\"2\" s:y=\"5\"  s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\"  s:pid=\"B\"/>\n    <g s:x=\"0\" s:y=\"32\"  s:pid=\"C\"/>\n    <g s:x=\"66\" s:y=\"25.5\" s:pid=\"Y\"/>\n    <!-- <path d=\"M-5,5 L2,5\"/> -->\n    <!-- <path d=\"M-5,20 L2,20\"/> -->\n    <!-- <path d=\"M-5,32 L0,32\"/> -->\n    <!-- <path d=\"M 70,25.5 L 66,25.5\"/> -->\n  </g>\n\n  <!-- AOI4 -->\n\n  <g s:type=\"_AOI4_\" transform=\"translate(250, 400)\" s:width=\"66\" s:height=\"40\">\n    <s:alias val=\"$_AOI4_\"/>\n\n    <path d=\"M0,0 L0,25 L15,25 A15 12.5 0 0 0 15,0 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M0,25 L0,50 L15,50 A15 12.5 0 0 0 15,25 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M30,12.5 A30 25 0 0 1 30,37.5 A30 25 0 0 0 60,25.5 A30 25 0 0 0 30,12.5\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <circle cx=\"63\" cy=\"25.5\" r=\"3\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <g s:x=\"0\" s:y=\"5\"  s:pid=\"A\"/>\n    <g s:x=\"0\" s:y=\"20\"  s:pid=\"B\"/>\n    <g s:x=\"0\" s:y=\"30\"  s:pid=\"C\"/>\n    <g s:x=\"0\" s:y=\"45\"  s:pid=\"D\"/>\n    <g s:x=\"66\" s:y=\"25.5\" s:pid=\"Y\"/>\n    <!-- <path d=\"M-5,5 L0,5\"/> -->\n    <!-- <path d=\"M-5,20 L0,20\"/> -->\n    <!-- <path d=\"M-5,30 L0,30\"/> -->\n    <!-- <path d=\"M-5,45 L0,45\"/> -->\n    <!-- <path d=\"M 70,25.5 L 66,25.5\"/> -->\n  </g>\n\n  <!-- OAI4 -->\n\n  <g s:type=\"_OAI4_\" transform=\"translate(350, 400)\" s:width=\"66\" s:height=\"40\">\n    <s:alias val=\"$_OAI4_\"/>\n\n    <path d=\"M30,13 L30,38 L45,38 A15 12.5 0 0 0 45,13 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M0,0 A30 25 0 0 1 0,25 A30 25 0 0 0 30,12.5 A30 25 0 0 0 0,0\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <path d=\"M0,25 A30 25 0 0 1 0,50 A30 25 0 0 0 30,37.5 A30 25 0 0 0 0,25\" fill=\"#ffffff\" class=\"$cell_id\"/>\n    <circle cx=\"63\" cy=\"25.5\" r=\"3\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g s:x=\"2\" s:y=\"5\"  s:pid=\"A\"/>\n    <g s:x=\"2\" s:y=\"20\"  s:pid=\"B\"/>\n    <g s:x=\"2\" s:y=\"30\"  s:pid=\"C\"/>\n    <g s:x=\"2\" s:y=\"45\"  s:pid=\"D\"/>\n    <g s:x=\"66\" s:y=\"25.5\" s:pid=\"Y\"/>\n    <!-- <path d=\"M-5,5 L2,5\"/> -->\n    <!-- <path d=\"M-5,20 L2,20\"/> -->\n    <!-- <path d=\"M-5,30 L2,30\"/> -->\n    <!-- <path d=\"M-5,45 L2,45\"/> -->\n    <!-- <path d=\"M 70,25.5 L 66,25.5\"/> -->\n  </g>\n\n  <g s:type=\"generic\" transform=\"translate(550,250)\" s:width=\"30\" s:height=\"40\">\n\n    <text x=\"15\" y=\"-4\" class=\"nodelabel $cell_id\" s:attribute=\"ref\">generic</text>\n    <rect width=\"30\" height=\"40\" s:generic=\"body\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\n    <g transform=\"translate(30, 10)\" s:x=\"30\" s:y=\"10\" s:pid=\"out0\">\n      <text x=\"5\" y=\"-4\" style=\"fill:#000; stroke:none\" class=\"$cell_id\">out0</text>\n    </g>\n    <g transform=\"translate(30, 30)\" s:x=\"30\" s:y=\"30\" s:pid=\"out1\">\n      <text x=\"5\" y=\"-4\" style=\"fill:#000;stroke:none\" class=\"$cell_id\">out1</text>\n    </g>\n    <g transform=\"translate(0, 10)\" s:x=\"0\" s:y=\"10\" s:pid=\"in0\">\n      <text x=\"-3\" y=\"-4\" class=\"inputPortLabel $cell_id\">in0</text>\n    </g>\n    <g transform=\"translate(0, 30)\" s:x=\"0\" s:y=\"30\" s:pid=\"in1\">\n      <text x=\"-3\" y=\"-4\" class=\"inputPortLabel $cell_id\">in1</text>\n    </g>\n  </g>\n\n  <g s:type=\"sub_odd\" transform=\"translate(650,250)\" s:width=\"30\" s:height=\"40\">\n    <text x=\"15\" y=\"-4\" class=\"nodelabel $cell_id\" s:attribute=\"ref\">sub_odd</text>\n    <rect width=\"30\" height=\"40\" s:generic=\"body\" fill=\"#e9e9e9\" rx=\"4\" class=\"$cell_id\"/>\n\n    <g transform=\"translate(30, 10)\" s:x=\"30\" s:y=\"10\" s:pid=\"out0\">\n      <text x=\"5\" y=\"-4\" style=\"fill:#000; stroke:none\" class=\"$cell_id\">out0</text>\n    </g>\n    <g transform=\"translate(30, 30)\" s:x=\"30\" s:y=\"30\" s:pid=\"out1\">\n      <text x=\"5\" y=\"-4\" style=\"fill:#000;stroke:none\" class=\"$cell_id\">out1</text>\n    </g>\n    <g transform=\"translate(0, 10)\" s:x=\"0\" s:y=\"10\" s:pid=\"in0\">\n      <text x=\"-3\" y=\"-4\" class=\"inputPortLabel $cell_id\">in0</text>\n    </g>\n    <g transform=\"translate(0, 30)\" s:x=\"0\" s:y=\"30\" s:pid=\"in1\">\n      <text x=\"-3\" y=\"-4\" class=\"inputPortLabel $cell_id\">in1</text>\n    </g>\n  </g>\n\n  <g s:type=\"sub_even\" transform=\"translate(720,250)\" s:width=\"30\" s:height=\"40\">\n    <text x=\"15\" y=\"-4\" class=\"nodelabel $cell_id\" s:attribute=\"ref\">sub_even</text>\n    <rect width=\"30\" height=\"40\" s:generic=\"body\" fill=\"#ffffff\" rx=\"4\" class=\"$cell_id\"/>\n\n    <g transform=\"translate(30, 10)\" s:x=\"30\" s:y=\"10\" s:pid=\"out0\">\n      <text x=\"5\" y=\"-4\" style=\"fill:#000; stroke:none\" class=\"$cell_id\">out0</text>\n    </g>\n    <g transform=\"translate(30, 30)\" s:x=\"30\" s:y=\"30\" s:pid=\"out1\">\n      <text x=\"5\" y=\"-4\" style=\"fill:#000;stroke:none\" class=\"$cell_id\">out1</text>\n    </g>\n    <g transform=\"translate(0, 10)\" s:x=\"0\" s:y=\"10\" s:pid=\"in0\">\n      <text x=\"-3\" y=\"-4\" class=\"inputPortLabel $cell_id\">in0</text>\n    </g>\n    <g transform=\"translate(0, 30)\" s:x=\"0\" s:y=\"30\" s:pid=\"in1\">\n      <text x=\"-3\" y=\"-4\" class=\"inputPortLabel $cell_id\">in1</text>\n    </g>\n  </g>\n\n</svg>\n";
+const analog = "<svg xmlns=\"http://www.w3.org/2000/svg\"\n     xmlns:xlink=\"http://www.w3.org/1999/xlink\"\n     xmlns:s=\"https://github.com/nturley/netlistsvg\">\n  <s:properties\n    constants=\"false\"\n    splitsAndJoins=\"false\"\n    genericsLaterals=\"true\">\n    <s:layoutEngine\n        org.eclipse.elk.layered.spacing.nodeNodeBetweenLayers=\"5\"\n        org.eclipse.elk.layered.compaction.postCompaction.strategy=\"4\"\n        org.eclipse.elk.spacing.nodeNode= \"35\"\n        org.eclipse.elk.direction=\"DOWN\"/>\n  </s:properties>\n<style>\nsvg {\n  stroke: #000;\n  fill: none;\n}\ntext {\n  fill: #000;\n  stroke: none;\n  font-size: 10px;\n  font-weight: bold;\n  font-family: \"Courier New\", monospace;\n}\n.nodelabel {\n  text-anchor: middle;\n}\n.inputPortLabel {\n  text-anchor: end;\n}\n.splitjoinBody {\n  fill: #000;\n}\n.symbol {\n  stroke-linejoin: round;\n  stroke-linecap: round;\n  stroke-width: 2;\n}\n.detail {\n  stroke-linejoin: round;\n  stroke-linecap: round;\n  fill: #000;\n}\n</style>\n\n<!-- power -->\n<g s:type=\"vcc\" s:width=\"20\" s:height=\"30\" transform=\"translate(5,20)\">\n  <s:alias val=\"vcc\" />\n  <text x=\"10\" y=\"-4\" class=\"nodelabel $cell_id\" s:attribute=\"name\">name</text>\n  <path d=\"M0,0 H20 L10,15 Z M10,15 V30\" fill=\"#ffffff\" class=\"$cell_id\"/>\n  <g s:x=\"10\" s:y=\"30\" s:pid=\"A\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"vee\" s:width=\"20\" s:height=\"30\" transform=\"translate(40,35)\">\n\t  <s:alias val=\"vee\" />\n\t  <text x=\"10\" y=\"10\" class=\"nodelabel $cell_id\" s:attribute=\"name\">name</text>\n\t  <path d=\"M0,0 H20 L10,-15 Z M10,-15 V-30\" fill=\"#ffffff\" class=\"$cell_id\"/>\n\t  <g s:x=\"10\" s:y=\"-30\" s:pid=\"A\" s:position=\"top\"/>\n\t</g>\n\n<g s:type=\"gnd\" s:width=\"20\" s:height=\"30\" transform=\"translate(80,35)\">\n  <s:alias val=\"gnd\"/>\n  <text x=\"30\" y=\"20\" class=\"nodelabel $cell_id\" s:attribute=\"name\">name</text>\n  <path d=\"M0,0 H20 M3,5 H17 M7,10 H13 M10,0 V-15\" class=\"$cell_id\"/>\n  <g s:x=\"10\" s:y=\"-15\" s:pid=\"A\" s:position=\"top\"/>\n</g>\n<!-- power -->\n\n<!-- signal -->\n<g s:type=\"inputExt\" s:width=\"30\" s:height=\"20\" transform=\"translate(5,70)\">\n  <text x=\"15\" y=\"-4\" class=\"$cell_id\" s:attribute=\"ref\">input</text>\n  <s:alias val=\"$_inputExt_\"/>\n  <path d=\"M0,0 V20 H15 L30,10 15,0 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n  <g s:x=\"30\" s:y=\"10\" s:pid=\"Y\" s:position=\"right\"/>\n</g>\n\n<g s:type=\"outputExt\" s:width=\"30\" s:height=\"20\" transform=\"translate(60,70)\">\n  <text x=\"15\" y=\"-4\" class=\"$cell_id\" s:attribute=\"ref\">output</text>\n  <s:alias val=\"$_outputExt_\"/>\n  <path d=\"M30,0 V20 H15 L0,10 15,0 Z\" fill=\"#ffffff\" class=\"$cell_id\"/>\n  <g s:x=\"0\" s:y=\"10\" s:pid=\"A\" s:position=\"left\"/>\n</g>\n<!-- signal -->\n\n<!-- passives -->\n<g s:type=\"resistor_h\" s:width=\"50\" s:height=\"10\" transform=\"translate(5,110)\">\n  <s:alias val=\"r_h\"/>\n  <text class=\"nodelabel $cell_id\" x=\"25\" y=\"-5\" s:attribute=\"ref\">X1</text>\n  <text class=\"nodelabel $cell_id\" x=\"25\" y=\"20\" s:attribute=\"value\">Xk</text>\n  <path d=\"M10,0 H40 V10 H10 Z\" fill=\"#ffffff\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,5 H10 M40,5 H50\" class=\"connect $cell_id\"/>\n  <g s:x=\"0\" s:y=\"5\" s:pid=\"A\" s:position=\"left\"/>\n  <g s:x=\"50\" s:y=\"5\" s:pid=\"B\" s:position=\"right\"/>\n</g>\n\n<g s:type=\"resistor_v\" s:width=\"10\" s:height=\"50\" transform=\"translate(25,130)\">\n  <s:alias val=\"r_v\"/>\n  <text x=\"15\"  y=\"15\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <text x=\"15\" y=\"30\" s:attribute=\"value\" class=\"$cell_id\" >Xk</text>\n  <path d=\"M0,10 V40 H10 V10 Z\" fill=\"#ffffff\" class=\"symbol $cell_id\"/>\n  <path d=\"M5,0 V10 M5,40 V50\" class=\"connect $cell_id\"/>\n  <g s:x=\"5\" s:y=\"0\" s:pid=\"A\" s:position=\"top\"/>\n  <g s:x=\"5\" s:y=\"50\" s:pid=\"B\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"capacitor_h\" s:width=\"50\" s:height=\"30\" transform=\"translate(60,100)\">\n  <s:alias val=\"c_h\"/>\n  <text x=\"35\" y=\"5\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <text x=\"35\" y=\"30\" s:attribute=\"value\" class=\"$cell_id\">Xu</text>\n  <path d=\"M20,0 V30 M30,0 V30\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,15 H20 M30,15 H50\" class=\"connect $cell_id\"/>\n  <g s:x=\"0\" s:y=\"15\" s:pid=\"A\" s:position=\"left\"/>\n  <g s:x=\"50\" s:y=\"15\" s:pid=\"B\" s:position=\"right\"/>\n</g>\n\n<g s:type=\"capacitor_v\" s:width=\"30\" s:height=\"50\" transform=\"translate(70,130)\">\n  <s:alias val=\"c_v\"/>\n  <text x=\"25\" y=\"10\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <text x=\"25\" y=\"45\" s:attribute=\"value\" class=\"$cell_id\">Xu</text>\n  <path d=\"M0,20 H30 M0,30 H30\" class=\"symbol $cell_id\"/>\n  <path d=\"M15,0 V20 M15,30 V50\" class=\"connect $cell_id\"/>\n  <g s:x=\"15\" s:y=\"0\" s:pid=\"A\" s:position=\"top\"/>\n  <g s:x=\"15\" s:y=\"50\" s:pid=\"B\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"inductor_h\" s:width=\"50\" s:height=\"10\" transform=\"translate(115,110)\">\n  <s:alias val=\"l_h\"/>\n  <text class=\"nodelabel $cell_id\" x=\"25\" y=\"-5\" s:attribute=\"ref\">X1</text>\n  <text class=\"nodelabel $cell_id\" x=\"25\" y=\"20\" s:attribute=\"value\">XpF</text>\n  <path d=\"M5,5 A5,5 0 0 1 15,5 A5,5 0 0 1 25,5 A5,5 0 0 1 35,5 A5,5 0 0 1 45,5\" class=\"$cell_id\"/>\n  <path d=\"M0,5 H5 M45,5 H50\" class=\"connect $cell_id\"/>\n  <g s:x=\"0\" s:y=\"5\" s:pid=\"A\" s:position=\"left\"/>\n  <g s:x=\"50\" s:y=\"5\" s:pid=\"B\" s:position=\"right\"/>\n</g>\n\n<g s:type=\"inductor_v\" s:width=\"10\" s:height=\"50\" transform=\"translate(135,130)\">\n  <s:alias val=\"l_v\"/>\n  <text x=\"15\" y=\"15\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <text x=\"15\" y=\"35\" s:attribute=\"value\" class=\"$cell_id\">XpF</text>\n  <path d=\"M5,5 A5,5 0 0 1 5,15 A5,5 0 0 1 5,25 A5,5 0 0 1 5,35 A5,5 0 0 1 5,45\" class=\"$cell_id\"/>\n  <path d=\"M5,0 V5 M5,45 V50\" class=\"connect $cell_id\"/>\n  <g s:x=\"5\" s:y=\"0\" s:pid=\"A\" s:position=\"top\"/>\n  <g s:x=\"5\" s:y=\"50\" s:pid=\"B\" s:position=\"bottom\"/>\n</g>\n<!-- passives -->\n\n<!-- sources -->\n<g s:type=\"voltage_source\" s:width=\"32\" s:height=\"52\" transform=\"translate(20,180)\">\n  <s:alias val=\"v\"/>\n  <text x=\"35\" y=\"20\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <text x=\"35\" y=\"35\" s:attribute=\"value\" class=\"$cell_id\">XV</text>\n  <circle cx=\"16\" cy=\"26\" r=\"16\" fill=\"#ffffff\" class=\"symbol $cell_id\"/>\n  <path d=\"M16,10 V42\" class=\"detail $cell_id\"/>\n  <path d=\"M16,0 V10 M16,42 V52\" class=\"connect $cell_id\"/>\n  <g s:x=\"16\" s:y=\"0\" s:pid=\"+\" s:position=\"top\"/>\n  <g s:x=\"16\" s:y=\"52\" s:pid=\"-\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"current_source\" s:width=\"32\" s:height=\"52\" transform=\"translate(75,180)\">\n  <s:alias val=\"i\"/>\n  <text x=\"35\" y=\"20\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <text x=\"35\" y=\"35\" s:attribute=\"value\" class=\"$cell_id\">XA</text>\n  <circle cx=\"16\" cy=\"26\" r=\"16\" fill=\"#ffffff\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,26 H32\" class=\"detail $cell_id\"/>\n  <path d=\"M16,0 V10 M16,42 V52\" class=\"connect $cell_id\"/>\n  <g s:x=\"16\" s:y=\"0\" s:pid=\"+\" s:position=\"top\"/>\n  <g s:x=\"16\" s:y=\"52\" s:pid=\"-\" s:position=\"bottom\"/>\n</g>\n<!-- sources -->\n\n<!-- diodes -->\n<g s:type=\"diode_h\" s:width=\"50\" s:height=\"20\" transform=\"translate(5,250)\">\n  <s:alias val=\"d_h\"/>\n  <text class=\"nodelabel $cell_id\" x=\"25\" y=\"-5\" s:attribute=\"ref\">X1</text>\n  <path d=\"M15,0 V20 L35,10 Z M35,0 V20\" fill=\"#ffffff\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,10 H15 M35,10 H50\" class=\"connect $cell_id\"/>\n  <g s:x=\"0\" s:y=\"10\" s:pid=\"+\" s:position=\"left\"/>\n  <g s:x=\"50\" s:y=\"10\" s:pid=\"-\" s:position=\"right\"/>\n</g>\n\n<g s:type=\"diode_v\" s:width=\"20\" s:height=\"50\" transform=\"translate(20,280)\">\n  <s:alias val=\"d_v\"/>\n  <text x=\"25\" y=\"25\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <path d=\"M0,15 H20 L10,35 Z M0,35 H20\" fill=\"#ffffff\" class=\"symbol $cell_id\"/>\n  <path d=\"M10,0 V15 M10,35 V50\" class=\"connect $cell_id\"/>\n  <g s:x=\"10\" s:y=\"0\" s:pid=\"+\" s:position=\"top\"/>\n  <g s:x=\"10\" s:y=\"50\" s:pid=\"-\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"diode_schottky_h\" s:width=\"50\" s:height=\"20\" transform=\"translate(60,250)\">\n  <s:alias val=\"d_sk_h\"/>\n  <text class=\"nodelabel $cell_id\" x=\"25\" y=\"-5\" s:attribute=\"ref\">X1</text>\n  <path d=\"M15,0 V20 L35,10 Z M35,0 V20\" fill=\"#ffffff\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,10 H15 M35,10 H50\" class=\"connect $cell_id\"/>\n  <!-- schottky -->\n  <path d=\"M35,0 H40 M35,20 H30\" class=\"symbol $cell_id\"/>\n  <g s:x=\"0\" s:y=\"10\" s:pid=\"+\" s:position=\"left\"/>\n  <g s:x=\"50\" s:y=\"10\" s:pid=\"-\" s:position=\"right\"/>\n</g>\n\n<g s:type=\"diode_schottky_v\" s:width=\"20\" s:height=\"50\" transform=\"translate(75,280)\">\n  <s:alias val=\"d_sk_v\"/>\n  <text x=\"25\" y=\"25\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <path d=\"M0,15 H20 L10,35 Z M0,35 H20\" fill=\"#ffffff\" class=\"symbol $cell_id\"/>\n  <path d=\"M10,0 V15 M10,35 V50\" class=\"connect $cell_id\"/>\n  <!-- schottky -->\n  <path d=\"M0,35 V40 M20,35 V30\" class=\"symbol $cell_id\"/>\n  <g s:x=\"10\" s:y=\"0\" s:pid=\"+\" s:position=\"top\"/>\n  <g s:x=\"10\" s:y=\"50\" s:pid=\"-\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"diode_led_h\" s:width=\"50\" s:height=\"20\" transform=\"translate(115,250)\">\n  <s:alias val=\"d_led_h\"/>\n  <text class=\"nodelabel $cell_id\" x=\"10\" y=\"-5\" s:attribute=\"ref\">X1</text>\n  <path d=\"M15,0 V20 L35,10 Z M35,0 V20\" fill=\"#ffffff\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,10 H15 M35,10 H50\" class=\"connect $cell_id\"/>\n  <!-- led -->\n  <path d=\"m20,-5 7,-7\" class=\"detail $cell_id\"/>\n  <path d=\"m24,-12 6,-3 -3,6 z\" class=\"detail $cell_id\"/>\n  <path d=\"m25,0 7,-7\" class=\"detail $cell_id\"/>\n  <path d=\"m29,-7 6,-3 -3,6 z\" class=\"detail $cell_id\"/>\n  <g s:x=\"0\" s:y=\"10\" s:pid=\"+\" s:position=\"top\"/>\n  <g s:x=\"50\" s:y=\"10\" s:pid=\"-\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"diode_led_v\" s:width=\"20\" s:height=\"50\" transform=\"translate(130,280)\">\n  <s:alias val=\"d_led_v\"/>\n  <text x=\"25\" y=\"25\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <path d=\"M0,15 H20 L10,35 Z M0,35 H20\" fill=\"#ffffff\" class=\"symbol $cell_id\"/>\n  <path d=\"M10,0 V15 M10,35 V50\" class=\"connect $cell_id\"/>\n  <!-- led -->\n  <path d=\"m-5,20 -7,7\" class=\"detail $cell_id\"/>\n  <path d=\"m-12,24 -3,6 6,-3 z\" class=\"detail $cell_id\"/>\n  <path d=\"m0,25 -7,7\" class=\"detail $cell_id\"/>\n  <path d=\"m-7,29 -3,6 6,-3 z\" class=\"detail $cell_id\"/>\n  <g s:x=\"10\" s:y=\"0\" s:pid=\"+\" s:position=\"top\"/>\n  <g s:x=\"10\" s:y=\"50\" s:pid=\"-\" s:position=\"bottom\"/>\n</g>\n<!-- diodes -->\n\n<!-- transistors -->\n<g s:type=\"transistor_npn\" s:width=\"32\" s:height=\"32\" transform=\"translate(15,350)\">\n  <s:alias val=\"q_npn\"/>\n  <text x=\"35\" y=\"20\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <circle r=\"16\" cx=\"16\" cy=\"16\" fill=\"#ffffff\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,16 H12 M12,6 V26\" class=\"detail $cell_id\"/>\n  <path d=\"m12,10 11,-8\" class=\"detail $cell_id\"/>\n  <path d=\"m12,21 11,8\" class=\"detail $cell_id\"/>\n  <!-- npn -->\n  <path d=\"m23,29 -6,-1 3,-5 z\" style=\"fill:#000000\" class=\"$cell_id\"/>\n  <g s:x=\"22\" s:y=\"2\" s:pid=\"C\" s:position=\"top\"/>\n  <g s:x=\"0\" s:y=\"16\" s:pid=\"B\" s:position=\"left\"/>\n  <g s:x=\"23\" s:y=\"29\" s:pid=\"E\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"transistor_pnp\" s:width=\"32\" s:height=\"32\" transform=\"translate(85,350)\">\n  <s:alias val=\"q_pnp\"/>\n  <text x=\"35\" y=\"20\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <circle r=\"16\" cx=\"16\" cy=\"16\" fill=\"#ffffff\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,16 H12 M12,6 V26\" class=\"detail $cell_id\"/>\n  <path d=\"m12,10 11,-8\" class=\"detail $cell_id\"/>\n  <path d=\"m12,21 11,8\" class=\"detail $cell_id\"/>\n  <!-- pnp -->\n  <path d=\"m14,9 6,-1 -3,-5 z\" style=\"fill:#000000\" class=\"$cell_id\"/>\n  <g s:x=\"22\" s:y=\"2\" s:pid=\"C\" s:position=\"top\"/>\n  <g s:x=\"0\" s:y=\"16\" s:pid=\"B\" s:position=\"left\"/>\n  <g s:x=\"23\" s:y=\"29\" s:pid=\"E\" s:position=\"bottom\"/>\n</g>\n<!-- transistors -->\n\n<!-- builtin -->\n<g s:type=\"generic\" s:width=\"30\" s:height=\"40\" transform=\"translate(150, 400)\">\n  <text x=\"15\" y=\"-4\" class=\"nodelabel $cell_id\" s:attribute=\"ref\">generic</text>\n  <rect width=\"30\" height=\"40\" x=\"0\" y=\"0\" s:generic=\"body\" fill=\"#ffffff\" rx=\"0\" class=\"$cell_id\"/>\n  <g transform=\"translate(30,10)\"\n     s:x=\"30\" s:y=\"10\" s:pid=\"out0\" s:position=\"right\">\n    <text x=\"5\" y=\"-4\" class=\"$cell_id\">out0</text>\n  </g>\n  <g transform=\"translate(30,30)\"\n     s:x=\"30\" s:y=\"30\" s:pid=\"out1\" s:position=\"right\">\n    <text x=\"5\" y=\"-4\" class=\"$cell_id\">out1</text>\n  </g>\n  <g transform=\"translate(0,10)\"\n     s:x=\"0\" s:y=\"10\" s:pid=\"in0\" s:position=\"left\">\n      <text x=\"-3\" y=\"-4\" class=\"inputPortLabel $cell_id\">in0</text>\n  </g>\n  <g transform=\"translate(0,30)\"\n     s:x=\"0\" s:y=\"30\" s:pid=\"in1\" s:position=\"left\">\n    <text x=\"-3\" y=\"-4\" class=\"inputPortLabel $cell_id\">in1</text>\n  </g>\n</g>\n<!-- builtin -->\n\n<!-- misc -->\n<g s:type=\"opamp\" s:width=\"60\" s:height=\"40\" transform=\"translate(20,450)\">\n  <s:alias val=\"op\"/>\n  <text x=\"40\" y=\"35\" s:attribute=\"ref\" class=\"$cell_id\">X1</text>\n  <path d=\"M10,0 V40 L50,20 Z\" fill=\"#ffffff\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,10 H10 M0,30 H10 M50,20 H60 M30,0 V10 M30,40 V30\" class=\"connect $cell_id\"/>\n  <path d=\"m15,10 5,0 m-2.5,-2.5 0,5\" class=\"detail $cell_id\"/>\n  <path d=\"m15,30 5,0\" class=\"detail $cell_id\"/>\n  <g s:x=\"0\" s:y=\"10\" s:pid=\"+\" s:position=\"left\"/>\n  <g s:x=\"0\" s:y=\"30\" s:pid=\"-\" s:position=\"left\"/>\n  <g s:x=\"60\" s:y=\"20\" s:pid=\"OUT\" s:position=\"right\"/>\n  <g s:x=\"30\" s:y=\"0\" s:pid=\"VCC\" s:position=\"top\"/>\n  <g s:x=\"30\" s:y=\"40\" s:pid=\"VEE\" s:position=\"bottom\"/>\n</g>\n\n<g s:type=\"xtal\" s:width=\"40\" s:height=\"30\" transform=\"translate(90,450)\">\n  <s:alias val=\"xtal\"/>\n  <text class=\"nodelabel $cell_id\" x=\"20\" y=\"45\" s:attribute=\"ref\">X1</text>\n  <rect x=\"15\" y=\"0\" width=\"10\" height=\"30\" fill=\"#ffffff\" class=\"symbol $cell_id\" />\n  <path d=\"M0,15 H10 M10,5 V25 M30,5 V25 M30,15 H40\" class=\"$cell_id\"/>\n  <g s:x=\"0\" s:y=\"15\" s:pid=\"A\" s:position=\"left\"/>\n  <g s:x=\"40\" s:y=\"15\" s:pid=\"B\" s:position=\"right\"/>\n</g>\n\n<g s:type=\"transformer_1p_1s\" s:width=\"35\" s:height=\"45\" transform=\"translate(140,450)\">\n  <s:alias val=\"transformer_1p_1s\"/>\n  <text class=\"nodelabel $cell_id\" x=\"25\" y=\"55\" s:attribute=\"ref\">X1</text>\n  <path d=\"M10,0 A5,5 0 0 1 10,10 A5,5 0 0 1 10,20 A5,5 0 0 1 10,30 A5,5 0 0 1 10,40\" class=\"$cell_id\"/>\n  <path d=\"M35,0 A5,5 0 0 0 35,10 A5,5 0 0 0 35,20 A5,5 0 0 0 35,30 A5,5 0 0 0 35,40\" class=\"$cell_id\"/>\n  <path d=\"M20,0 V40 M25,0 V40\" class=\"symbol $cell_id\"/>\n  <path d=\"M0,0 H10 M0,40 H10 M35,0 H45 M35,40 H45\" class=\"connect $cell_id\"/>\n  <g s:x=\"0\" s:y=\"0\" s:pid=\"L1.1\" s:position=\"left\"/>\n  <g s:x=\"0\" s:y=\"40\" s:pid=\"L1.2\" s:position=\"left\"/>\n  <g s:x=\"40\" s:y=\"0\" s:pid=\"L2.1\" s:position=\"right\"/>\n  <g s:x=\"40\" s:y=\"40\" s:pid=\"L2.2\" s:position=\"right\"/>\n</g>\n<!-- misc -->\n</svg>\n";
+const exampleDigital = Buffer("ewogICJtb2R1bGVzIjogewogICAgInVwM2Rvd241IjogewogICAgICAicG9ydHMiOiB7CiAgICAgICAgImNsb2NrIjogewogICAgICAgICAgImRpcmVjdGlvbiI6ICJpbnB1dCIsCiAgICAgICAgICAiYml0cyI6IFsgMiBdCiAgICAgICAgfSwKICAgICAgICAiZGF0YV9pbiI6IHsKICAgICAgICAgICJkaXJlY3Rpb24iOiAiaW5wdXQiLAogICAgICAgICAgImJpdHMiOiBbIDMsIDQsIDUsIDYsIDcsIDgsIDksIDEwLCAxMSBdCiAgICAgICAgfSwKICAgICAgICAidXAiOiB7CiAgICAgICAgICAiZGlyZWN0aW9uIjogImlucHV0IiwKICAgICAgICAgICJiaXRzIjogWyAxMiBdCiAgICAgICAgfSwKICAgICAgICAiZG93biI6IHsKICAgICAgICAgICJkaXJlY3Rpb24iOiAiaW5wdXQiLAogICAgICAgICAgImJpdHMiOiBbIDEzIF0KICAgICAgICB9LAogICAgICAgICJjYXJyeV9vdXQiOiB7CiAgICAgICAgICAiZGlyZWN0aW9uIjogIm91dHB1dCIsCiAgICAgICAgICAiYml0cyI6IFsgMTQgXQogICAgICAgIH0sCiAgICAgICAgImJvcnJvd19vdXQiOiB7CiAgICAgICAgICAiZGlyZWN0aW9uIjogIm91dHB1dCIsCiAgICAgICAgICAiYml0cyI6IFsgMTUgXQogICAgICAgIH0sCiAgICAgICAgImNvdW50X291dCI6IHsKICAgICAgICAgICJkaXJlY3Rpb24iOiAib3V0cHV0IiwKICAgICAgICAgICJiaXRzIjogWyAxNiwgMTcsIDE4LCAxOSwgMjAsIDIxLCAyMiwgMjMsIDI0IF0KICAgICAgICB9LAogICAgICAgICJwYXJpdHlfb3V0IjogewogICAgICAgICAgImRpcmVjdGlvbiI6ICJvdXRwdXQiLAogICAgICAgICAgImJpdHMiOiBbIDI1IF0KICAgICAgICB9CiAgICAgIH0sCiAgICAgICJjZWxscyI6IHsKICAgICAgICAiJGFkZCRpbnB1dC52OjE3JDMiOiB7CiAgICAgICAgICAidHlwZSI6ICIkYWRkIiwKICAgICAgICAgICJwb3J0X2RpcmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogImlucHV0IiwKICAgICAgICAgICAgIkIiOiAiaW5wdXQiLAogICAgICAgICAgICAiWSI6ICJvdXRwdXQiCiAgICAgICAgICB9LAogICAgICAgICAgImNvbm5lY3Rpb25zIjogewogICAgICAgICAgICAiQSI6IFsgMTYsIDE3LCAxOCwgMTksIDIwLCAyMSwgMjIsIDIzLCAyNCBdLAogICAgICAgICAgICAiQiI6IFsgIjEiLCAiMSIgXSwKICAgICAgICAgICAgIlkiOiBbIDI2LCAyNywgMjgsIDI5LCAzMCwgMzEsIDMyLCAzMywgMzQsIDM1IF0KICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgICIkYW5kJGlucHV0LnY6MjgkNSI6IHsKICAgICAgICAgICJ0eXBlIjogIiRhbmQiLAogICAgICAgICAgInBvcnRfZGlyZWN0aW9ucyI6IHsKICAgICAgICAgICAgIkEiOiAiaW5wdXQiLAogICAgICAgICAgICAiQiI6ICJpbnB1dCIsCiAgICAgICAgICAgICJZIjogIm91dHB1dCIKICAgICAgICAgIH0sCiAgICAgICAgICAiY29ubmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogWyAxMiBdLAogICAgICAgICAgICAiQiI6IFsgMzUgXSwKICAgICAgICAgICAgIlkiOiBbIDM2IF0KICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgICIkYW5kJGlucHV0LnY6MjkkNiI6IHsKICAgICAgICAgICJ0eXBlIjogIiRhbmQiLAogICAgICAgICAgInBvcnRfZGlyZWN0aW9ucyI6IHsKICAgICAgICAgICAgIkEiOiAiaW5wdXQiLAogICAgICAgICAgICAiQiI6ICJpbnB1dCIsCiAgICAgICAgICAgICJZIjogIm91dHB1dCIKICAgICAgICAgIH0sCiAgICAgICAgICAiY29ubmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogWyAxMyBdLAogICAgICAgICAgICAiQiI6IFsgMzcgXSwKICAgICAgICAgICAgIlkiOiBbIDM4IF0KICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgICIkcHJvY2RmZiQ0MCI6IHsKICAgICAgICAgICJ0eXBlIjogIiRkZmYiLAogICAgICAgICAgInBvcnRfZGlyZWN0aW9ucyI6IHsKICAgICAgICAgICAgIkNMSyI6ICJpbnB1dCIsCiAgICAgICAgICAgICJEIjogImlucHV0IiwKICAgICAgICAgICAgIlEiOiAib3V0cHV0IgogICAgICAgICAgfSwKICAgICAgICAgICJjb25uZWN0aW9ucyI6IHsKICAgICAgICAgICAgIkNMSyI6IFsgMiBdLAogICAgICAgICAgICAiRCI6IFsgMzksIDQwLCA0MSwgNDIsIDQzLCA0NCwgNDUsIDQ2LCA0NyBdLAogICAgICAgICAgICAiUSI6IFsgMTYsIDE3LCAxOCwgMTksIDIwLCAyMSwgMjIsIDIzLCAyNCBdCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiJHByb2NkZmYkNDEiOiB7CiAgICAgICAgICAidHlwZSI6ICIkZGZmIiwKICAgICAgICAgICJwb3J0X2RpcmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJDTEsiOiAiaW5wdXQiLAogICAgICAgICAgICAiRCI6ICJpbnB1dCIsCiAgICAgICAgICAgICJRIjogIm91dHB1dCIKICAgICAgICAgIH0sCiAgICAgICAgICAiY29ubmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJDTEsiOiBbIDIgXSwKICAgICAgICAgICAgIkQiOiBbIDM2IF0sCiAgICAgICAgICAgICJRIjogWyAxNCBdCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiJHByb2NkZmYkNDIiOiB7CiAgICAgICAgICAidHlwZSI6ICIkZGZmIiwKICAgICAgICAgICJwb3J0X2RpcmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJDTEsiOiAiaW5wdXQiLAogICAgICAgICAgICAiRCI6ICJpbnB1dCIsCiAgICAgICAgICAgICJRIjogIm91dHB1dCIKICAgICAgICAgIH0sCiAgICAgICAgICAiY29ubmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJDTEsiOiBbIDIgXSwKICAgICAgICAgICAgIkQiOiBbIDM4IF0sCiAgICAgICAgICAgICJRIjogWyAxNSBdCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiJHByb2NkZmYkNDMiOiB7CiAgICAgICAgICAidHlwZSI6ICIkZGZmIiwKICAgICAgICAgICJwb3J0X2RpcmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJDTEsiOiAiaW5wdXQiLAogICAgICAgICAgICAiRCI6ICJpbnB1dCIsCiAgICAgICAgICAgICJRIjogIm91dHB1dCIKICAgICAgICAgIH0sCiAgICAgICAgICAiY29ubmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJDTEsiOiBbIDIgXSwKICAgICAgICAgICAgIkQiOiBbIDQ4IF0sCiAgICAgICAgICAgICJRIjogWyAyNSBdCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiJHByb2NtdXgkMzYiOiB7CiAgICAgICAgICAidHlwZSI6ICIkcG11eCIsCiAgICAgICAgICAicG9ydF9kaXJlY3Rpb25zIjogewogICAgICAgICAgICAiQSI6ICJpbnB1dCIsCiAgICAgICAgICAgICJCIjogImlucHV0IiwKICAgICAgICAgICAgIlMiOiAiaW5wdXQiLAogICAgICAgICAgICAiWSI6ICJvdXRwdXQiCiAgICAgICAgICB9LAogICAgICAgICAgImNvbm5lY3Rpb25zIjogewogICAgICAgICAgICAiQSI6IFsgMTYsIDE3LCAxOCwgMTksIDIwLCAyMSwgMjIsIDIzLCAyNCBdLAogICAgICAgICAgICAiQiI6IFsgMjYsIDI3LCAyOCwgMjksIDMwLCAzMSwgMzIsIDMzLCAzNCwgNDksIDUwLCA1MSwgNTIsIDUzLCA1NCwgNTUsIDU2LCA1NywgMywgNCwgNSwgNiwgNywgOCwgOSwgMTAsIDExIF0sCiAgICAgICAgICAgICJTIjogWyA1OCwgNTksIDYwIF0sCiAgICAgICAgICAgICJZIjogWyAzOSwgNDAsIDQxLCA0MiwgNDMsIDQ0LCA0NSwgNDYsIDQ3IF0KICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgICIkcHJvY211eCQzN19DTVAwIjogewogICAgICAgICAgInR5cGUiOiAiJGVxIiwKICAgICAgICAgICJwb3J0X2RpcmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogImlucHV0IiwKICAgICAgICAgICAgIkIiOiAiaW5wdXQiLAogICAgICAgICAgICAiWSI6ICJvdXRwdXQiCiAgICAgICAgICB9LAogICAgICAgICAgImNvbm5lY3Rpb25zIjogewogICAgICAgICAgICAiQSI6IFsgMTMsIDEyIF0sCiAgICAgICAgICAgICJCIjogWyAiMCIsICIxIiBdLAogICAgICAgICAgICAiWSI6IFsgNTggXQogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgIiRwcm9jbXV4JDM4X0NNUDAiOiB7CiAgICAgICAgICAidHlwZSI6ICIkZXEiLAogICAgICAgICAgInBvcnRfZGlyZWN0aW9ucyI6IHsKICAgICAgICAgICAgIkEiOiAiaW5wdXQiLAogICAgICAgICAgICAiQiI6ICJpbnB1dCIsCiAgICAgICAgICAgICJZIjogIm91dHB1dCIKICAgICAgICAgIH0sCiAgICAgICAgICAiY29ubmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogWyAxMywgMTIgXSwKICAgICAgICAgICAgIkIiOiBbICIxIiwgIjAiIF0sCiAgICAgICAgICAgICJZIjogWyA1OSBdCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiJHByb2NtdXgkMzlfQ01QMCI6IHsKICAgICAgICAgICJ0eXBlIjogIiRlcSIsCiAgICAgICAgICAicG9ydF9kaXJlY3Rpb25zIjogewogICAgICAgICAgICAiQSI6ICJpbnB1dCIsCiAgICAgICAgICAgICJCIjogImlucHV0IiwKICAgICAgICAgICAgIlkiOiAib3V0cHV0IgogICAgICAgICAgfSwKICAgICAgICAgICJjb25uZWN0aW9ucyI6IHsKICAgICAgICAgICAgIkEiOiBbIDEzLCAxMiBdLAogICAgICAgICAgICAiQiI6IFsgIjAiLCAiMCIgXSwKICAgICAgICAgICAgIlkiOiBbIDYwIF0KICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgICIkcmVkdWNlX3hvciRpbnB1dC52OjI3JDQiOiB7CiAgICAgICAgICAidHlwZSI6ICIkcmVkdWNlX3hvciIsCiAgICAgICAgICAicG9ydF9kaXJlY3Rpb25zIjogewogICAgICAgICAgICAiQSI6ICJpbnB1dCIsCiAgICAgICAgICAgICJZIjogIm91dHB1dCIKICAgICAgICAgIH0sCiAgICAgICAgICAiY29ubmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogWyAzOSwgNDAsIDQxLCA0MiwgNDMsIDQ0LCA0NSwgNDYsIDQ3IF0sCiAgICAgICAgICAgICJZIjogWyA0OCBdCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiJHN1YiRpbnB1dC52OjE2JDIiOiB7CiAgICAgICAgICAidHlwZSI6ICIkc3ViIiwKICAgICAgICAgICJwb3J0X2RpcmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogImlucHV0IiwKICAgICAgICAgICAgIkIiOiAiaW5wdXQiLAogICAgICAgICAgICAiWSI6ICJvdXRwdXQiCiAgICAgICAgICB9LAogICAgICAgICAgImNvbm5lY3Rpb25zIjogewogICAgICAgICAgICAiQSI6IFsgMTYsIDE3LCAxOCwgMTksIDIwLCAyMSwgMjIsIDIzLCAyNCBdLAogICAgICAgICAgICAiQiI6IFsgIjEiLCAiMCIsICIxIiBdLAogICAgICAgICAgICAiWSI6IFsgNDksIDUwLCA1MSwgNTIsIDUzLCA1NCwgNTUsIDU2LCA1NywgMzcgXQogICAgICAgICAgfQogICAgICAgIH0KICAgICAgfQogICAgfQogIH0KfQo=","base64");
 const exampleAnalog = Buffer("ewogICJtb2R1bGVzIjogewogICAgInJlc2lzdG9yX2RpdmlkZXIiOiB7CiAgICAgICJwb3J0cyI6IHsKICAgICAgICAiQSI6IHsKICAgICAgICAgICJkaXJlY3Rpb24iOiAiaW5wdXQiLAogICAgICAgICAgImJpdHMiOiBbMl0KICAgICAgICB9LAogICAgICAgICJCIjogewogICAgICAgICAgImRpcmVjdGlvbiI6ICJpbnB1dCIsCiAgICAgICAgICAiYml0cyI6IFszXQogICAgICAgIH0sCiAgICAgICAgIkEgQU5EIEIiOiB7CiAgICAgICAgICAiZGlyZWN0aW9uIjogIm91dHB1dCIsCiAgICAgICAgICAiYml0cyI6IFs0XQogICAgICAgIH0KICAgICAgfSwKICAgICAgImNlbGxzIjogewogICAgICAgICJSMSI6IHsKICAgICAgICAgICJ0eXBlIjogInJfdiIsCiAgICAgICAgICAiY29ubmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogWzJdLAogICAgICAgICAgICAiQiI6IFs1XQogICAgICAgICAgfSwKICAgICAgICAgICJhdHRyaWJ1dGVzIjogewogICAgICAgICAgICAidmFsdWUiOiIxMGsiCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiUjIiOiB7CiAgICAgICAgICAidHlwZSI6ICJyX3YiLAogICAgICAgICAgImNvbm5lY3Rpb25zIjogewogICAgICAgICAgICAiQSI6IFszXSwKICAgICAgICAgICAgIkIiOiBbNV0KICAgICAgICAgIH0sCiAgICAgICAgICAiYXR0cmlidXRlcyI6IHsKICAgICAgICAgICAgInZhbHVlIjoiMTBrIgogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgIlExIjogewogICAgICAgICAgInR5cGUiOiAicV9wbnAiLAogICAgICAgICAgInBvcnRfZGlyZWN0aW9ucyI6IHsKICAgICAgICAgICAgIkMiOiAiaW5wdXQiLAogICAgICAgICAgICAiQiI6ICJpbnB1dCIsCiAgICAgICAgICAgICJFIjogIm91dHB1dCIKICAgICAgICAgIH0sCiAgICAgICAgICAiY29ubmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJDIjogWzZdLAogICAgICAgICAgICAiQiI6IFs1XSwKICAgICAgICAgICAgIkUiOiBbN10KICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgICJSMyI6IHsKICAgICAgICAgICJ0eXBlIjogInJfdiIsCiAgICAgICAgICAiY29ubmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogWzddLAogICAgICAgICAgICAiQiI6IFs4XQogICAgICAgICAgfSwKICAgICAgICAgICJhdHRyaWJ1dGVzIjogewogICAgICAgICAgICAidmFsdWUiOiIxMGsiCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiUjQiOiB7CiAgICAgICAgICAidHlwZSI6ICJyX3YiLAogICAgICAgICAgImNvbm5lY3Rpb25zIjogewogICAgICAgICAgICAiQSI6IFs3XSwKICAgICAgICAgICAgIkIiOiBbOV0KICAgICAgICAgIH0sCiAgICAgICAgICAiYXR0cmlidXRlcyI6IHsKICAgICAgICAgICAgInZhbHVlIjoiMTBrIgogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgIlI1IjogewogICAgICAgICAgInR5cGUiOiAicl92IiwKICAgICAgICAgICJjb25uZWN0aW9ucyI6IHsKICAgICAgICAgICAgIkEiOiBbNF0sCiAgICAgICAgICAgICJCIjogWzEyXQogICAgICAgICAgfSwKICAgICAgICAgICJhdHRyaWJ1dGVzIjogewogICAgICAgICAgICAidmFsdWUiOiIxMGsiCiAgICAgICAgICB9CiAgICAgICAgfSwKICAgICAgICAiUTIiOiB7CiAgICAgICAgICAidHlwZSI6ICJxX3BucCIsCiAgICAgICAgICAicG9ydF9kaXJlY3Rpb25zIjogewogICAgICAgICAgICAiQyI6ICJpbnB1dCIsCiAgICAgICAgICAgICJCIjogImlucHV0IiwKICAgICAgICAgICAgIkUiOiAib3V0cHV0IgogICAgICAgICAgfSwKICAgICAgICAgICJjb25uZWN0aW9ucyI6IHsKICAgICAgICAgICAgIkMiOiBbMTBdLAogICAgICAgICAgICAiQiI6IFs5XSwKICAgICAgICAgICAgIkUiOiBbNF0KICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgICJ2Y2MiOiB7CiAgICAgICAgICAidHlwZSI6ICJ2Y2MiLAogICAgICAgICAgImNvbm5lY3Rpb25zIjogewogICAgICAgICAgICAiQSI6IFs2XQogICAgICAgICAgfSwKICAgICAgICAgICJhdHRyaWJ1dGVzIjogewogICAgICAgICAgICAibmFtZSI6IlZDQyIKICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgICJ2Y2MyIjogewogICAgICAgICAgInR5cGUiOiAidmNjIiwKICAgICAgICAgICJjb25uZWN0aW9ucyI6IHsKICAgICAgICAgICAgIkEiOiBbMTBdCiAgICAgICAgICB9LAogICAgICAgICAgImF0dHJpYnV0ZXMiOiB7CiAgICAgICAgICAgICJuYW1lIjoiVkNDIgogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgImduZCI6IHsKICAgICAgICAgICJ0eXBlIjogImduZCIsCiAgICAgICAgICAicG9ydF9kaXJlY3Rpb25zIjogewogICAgICAgICAgICAiQSI6ICJpbnB1dCIKICAgICAgICAgIH0sCiAgICAgICAgICAiY29ubmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogWzhdCiAgICAgICAgICB9LAogICAgICAgICAgImF0dHJpYnV0ZXMiOiB7CiAgICAgICAgICAgICJuYW1lIjoiREdORCIKICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgICJnbmQyIjogewogICAgICAgICAgInR5cGUiOiAiZ25kIiwKICAgICAgICAgICJwb3J0X2RpcmVjdGlvbnMiOiB7CiAgICAgICAgICAgICJBIjogImlucHV0IgogICAgICAgICAgfSwKICAgICAgICAgICJjb25uZWN0aW9ucyI6IHsKICAgICAgICAgICAgIkEiOiBbMTJdCiAgICAgICAgICB9LAogICAgICAgICAgImF0dHJpYnV0ZXMiOiB7CiAgICAgICAgICAgICJuYW1lIjoiREdORCIKICAgICAgICAgIH0KICAgICAgICB9CiAgICAgIH0KICAgIH0KICB9Cn0K","base64");
 const schema = Buffer("ewogICJkZXNjcmlwdGlvbiI6ICJKU09OIFNjaGVtYSBZb3N5cyBuZXRsaXN0cyBKU09OIGZvcm1hdCIsCiAgInR5cGUiOiAib2JqZWN0IiwKICAvLyBhbiBlbXB0eSBvYmplY3QgaXMgaW52YWxpZAogICJyZXF1aXJlZCI6IFsibW9kdWxlcyJdLAogICJlcnJvck1lc3NhZ2UiOiB7CiAgICAidHlwZSI6ICJuZXRsaXN0IG11c3QgYmUgYSBKU09OIG9iamVjdCIsCiAgICAicmVxdWlyZWQiOiAibmV0bGlzdCBtdXN0IGhhdmUgYSBtb2R1bGVzIHByb3BlcnR5IiwKICB9LAogICJwcm9wZXJ0aWVzIjogewogICAgIm1vZHVsZXMiOiB7CiAgICAgICJ0eXBlIjogIm9iamVjdCIsCiAgICAgIC8vIHRoZXJlIG11c3QgYmUgYXQgbGVhc3Qgb25lIG1vZHVsZQogICAgICAibWluUHJvcGVydGllcyI6IDEsCiAgICAgICAgImVycm9yTWVzc2FnZSI6IHsKICAgICAgICAgICJ0eXBlIjogIm5ldGxpc3QgbW9kdWxlcyBtdXN0IGJlIG9iamVjdHMiLAogICAgICAgICAgIm1pblByb3BlcnRpZXMiOiAibmV0bGlzdCBtdXN0IGhhdmUgYXQgbGVhc3Qgb25lIG1vZHVsZSIsCiAgICAgICAgfSwKICAgICAgImFkZGl0aW9uYWxQcm9wZXJ0aWVzIjogewogICAgICAgICJ0eXBlIjogIm9iamVjdCIsCiAgICAgICAgInByb3BlcnRpZXMiOiB7CiAgICAgICAgICAicG9ydHMiOiB7CiAgICAgICAgICAgICJ0eXBlIjogIm9iamVjdCIsCiAgICAgICAgICAgICJhZGRpdGlvbmFsUHJvcGVydGllcyI6IHsKICAgICAgICAgICAgICAidHlwZSI6ICJvYmplY3QiLAogICAgICAgICAgICAgIC8vIGFsbCBwb3J0cyBtdXN0IGhhdmUgYml0cyBhbmQgYSBkaXJlY3Rpb24KICAgICAgICAgICAgICAicmVxdWlyZWQiOiBbImRpcmVjdGlvbiIsICJiaXRzIl0sCiAgICAgICAgICAgICAgInByb3BlcnRpZXMiOiB7CiAgICAgICAgICAgICAgICAiZGlyZWN0aW9uIjogewogICAgICAgICAgICAgICAgICAiZW51bSI6IFsiaW5wdXQiLCAib3V0cHV0IiwgImlub3V0Il0KICAgICAgICAgICAgICAgIH0sCiAgICAgICAgICAgICAgICAiYml0cyI6IHsKICAgICAgICAgICAgICAgICAgInR5cGUiOiAiYXJyYXkiLAogICAgICAgICAgICAgICAgICAvLyBiaXRzIGNhbiBiZSB0aGUgc3RyaW5nICIwIiwgIjEiLCAieCIsICJ6Iiwgb3IgYSBudW1iZXIuCiAgICAgICAgICAgICAgICAgICJpdGVtcyI6IHsKICAgICAgICAgICAgICAgICAgICAib25lT2YiOlt7InR5cGUiOiJudW1iZXIifSwgeyJlbnVtIjpbIjAiLCIxIiwieCIsInoiXX1dCiAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICB9CiAgICAgICAgICAgIH0KICAgICAgICAgIH0sCiAgICAgICAgICAiY2VsbHMiOiB7CiAgICAgICAgICAgICJ0eXBlIjogIm9iamVjdCIsCiAgICAgICAgICAgICJhZGRpdGlvbmFsUHJvcGVydGllcyI6IHsKICAgICAgICAgICAgICAidHlwZSI6ICJvYmplY3QiLAogICAgICAgICAgICAgIC8vIGFsbCBjZWxscyBtdXN0IGhhdmUgYSB0eXBlIGFuZCBjb25uZWN0aW9ucwogICAgICAgICAgICAgICJyZXF1aXJlZCI6IFsKICAgICAgICAgICAgICAgICJ0eXBlIiwKICAgICAgICAgICAgICAgICJjb25uZWN0aW9ucyIKICAgICAgICAgICAgICBdLAogICAgICAgICAgICAgICJwcm9wZXJ0aWVzIjogewogICAgICAgICAgICAgICAgInR5cGUiOnsidHlwZSI6InN0cmluZyJ9LAogICAgICAgICAgICAgICAgImNvbm5lY3Rpb25zIjogewogICAgICAgICAgICAgICAgICAidHlwZSI6ICJvYmplY3QiLAogICAgICAgICAgICAgICAgICAiYWRkaXRpb25hbFByb3BlcnRpZXMiOiB7CiAgICAgICAgICAgICAgICAgICAgInR5cGUiOiJhcnJheSIsCiAgICAgICAgICAgICAgICAgICAgIml0ZW1zIjogewogICAgICAgICAgICAgICAgICAgICAgIm9uZU9mIjpbeyJ0eXBlIjoibnVtYmVyIn0sIHsiZW51bSI6WyIwIiwiMSIsIngiLCJ6Il19XQogICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgfSwKICAgICAgICAgICAgICAgIC8vIHBvcnQgZGlyZWN0aW9ucyBhcmUgb3B0aW9uYWwKICAgICAgICAgICAgICAgICJwb3J0X2RpcmVjdGlvbnMiOnsKICAgICAgICAgICAgICAgICAgInR5cGUiOiAib2JqZWN0IiwKICAgICAgICAgICAgICAgICAgImFkZGl0aW9uYWxQcm9wZXJ0aWVzIjogewogICAgICAgICAgICAgICAgICAgICJlbnVtIjogWyJpbnB1dCIsICJvdXRwdXQiLCAiaW5vdXQiXQogICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICB9LAogICAgICAgICAgICAgICAgLy8gbmV0bGlzdHN2ZyBkb2Vzbid0IHVzZSB0aGVzZSB5ZXQKICAgICAgICAgICAgICAgICJoaWRlX25hbWUiOiB7ImVudW0iOlswLCAxXX0sCiAgICAgICAgICAgICAgICAicGFyYW1ldGVycyI6IHsidHlwZSI6ICJvYmplY3QifSwKICAgICAgICAgICAgICAgICJhdHRyaWJ1dGVzIjogeyJ0eXBlIjogIm9iamVjdCJ9CiAgICAgICAgICAgICAgfQogICAgICAgICAgICB9CiAgICAgICAgICB9LAogICAgICAgICAgLy8gbm90IHlldCB1c2VkIGJ5IG5ldGxpc3RzdmcKICAgICAgICAgICJuZXRuYW1lcyI6IHsKICAgICAgICAgICAgInR5cGUiOiAib2JqZWN0IiwKICAgICAgICAgICAgImFkZGl0aW9uYWxQcm9wZXJ0aWVzIjogewogICAgICAgICAgICAgICJ0eXBlIjogIm9iamVjdCIsCiAgICAgICAgICAgICAgInByb3BlcnRpZXMiOiB7CiAgICAgICAgICAgICAgICAiYml0cyI6IHsKICAgICAgICAgICAgICAgICAgInR5cGUiOiAiYXJyYXkiLAogICAgICAgICAgICAgICAgICAvLyBiaXRzIGNhbiBiZSB0aGUgc3RyaW5nICIwIiwgIjEiLCAieCIsICJ6Iiwgb3IgYSBudW1iZXIuCiAgICAgICAgICAgICAgICAgICJpdGVtcyI6IHsKICAgICAgICAgICAgICAgICAgICAib25lT2YiOiBbeyJ0eXBlIjogIm51bWJlciJ9LCB7ImVudW0iOiBbIjAiLCAiMSIsICJ4IiwgInoiXX1dCiAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgIH0sCiAgICAgICAgICAgICAgICAiaGlkZV9uYW1lIjogeyJlbnVtIjogWzAsIDFdfSwKICAgICAgICAgICAgICAgICJhdHRyaWJ1dGVzIjogeyJ0eXBlIjogIm9iamVjdCJ9CiAgICAgICAgICAgICAgfQogICAgICAgICAgICB9CiAgICAgICAgICB9LAogICAgICAgICAgImF0dHJpYnV0ZXMiOiB7CiAgICAgICAgICAgICJ0eXBlIjogIm9iamVjdCIsCiAgICAgICAgICAgICJwcm9wZXJ0aWVzIjogewogICAgICAgICAgICAgICJ0b3AiOiB7ImVudW0iOiBbMCwgMSwgIjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwIiwgIjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxIl19CiAgICAgICAgICAgIH0KICAgICAgICAgIH0KICAgICAgICB9LAogICAgICAgIC8vIHRoZXJlIG11c3QgZWl0aGVyIGJlIHBvcnRzIG9yIGNlbGxzIGF0dHJpYnV0ZQogICAgICAgICJhbnlPZiI6IFt7InJlcXVpcmVkIjogWyJwb3J0cyJdfSx7InJlcXVpcmVkIjogWyJjZWxscyJdfV0KICAgICAgfQogICAgfQogIH0KfQo=","base64");
 const exampleDigitalJson = json5.parse(exampleDigital);
@@ -1455,7 +2149,7 @@ module.exports = {
 };
 
 }).call(this)}).call(this,require("buffer").Buffer)
-},{"../built":8,"ajv":11,"ajv-errors":10,"buffer":75,"json5":82}],10:[function(require,module,exports){
+},{"../built":9,"ajv":13,"ajv-errors":12,"buffer":78,"json5":88}],12:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const ajv_1 = require("ajv");
@@ -1731,10 +2425,10 @@ exports.default = ajvErrors;
 module.exports = ajvErrors;
 module.exports.default = ajvErrors;
 
-},{"ajv":11,"ajv/dist/compile/codegen":13,"ajv/dist/compile/codegen/code":12,"ajv/dist/compile/errors":15,"ajv/dist/compile/names":17,"ajv/dist/compile/validate":26}],11:[function(require,module,exports){
+},{"ajv":13,"ajv/dist/compile/codegen":15,"ajv/dist/compile/codegen/code":14,"ajv/dist/compile/errors":17,"ajv/dist/compile/names":19,"ajv/dist/compile/validate":28}],13:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = void 0;
+exports.MissingRefError = exports.ValidationError = exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = exports.Ajv = void 0;
 const core_1 = require("./core");
 const draft7_1 = require("./vocabularies/draft7");
 const discriminator_1 = require("./vocabularies/discriminator");
@@ -1763,7 +2457,9 @@ class Ajv extends core_1.default {
             super.defaultMeta() || (this.getSchema(META_SCHEMA_ID) ? META_SCHEMA_ID : undefined));
     }
 }
+exports.Ajv = Ajv;
 module.exports = exports = Ajv;
+module.exports.Ajv = Ajv;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.default = Ajv;
 var validate_1 = require("./compile/validate");
@@ -1775,11 +2471,16 @@ Object.defineProperty(exports, "stringify", { enumerable: true, get: function ()
 Object.defineProperty(exports, "nil", { enumerable: true, get: function () { return codegen_1.nil; } });
 Object.defineProperty(exports, "Name", { enumerable: true, get: function () { return codegen_1.Name; } });
 Object.defineProperty(exports, "CodeGen", { enumerable: true, get: function () { return codegen_1.CodeGen; } });
+var validation_error_1 = require("./runtime/validation_error");
+Object.defineProperty(exports, "ValidationError", { enumerable: true, get: function () { return validation_error_1.default; } });
+var ref_error_1 = require("./compile/ref_error");
+Object.defineProperty(exports, "MissingRefError", { enumerable: true, get: function () { return ref_error_1.default; } });
 
-},{"./compile/codegen":13,"./compile/validate":26,"./core":29,"./refs/json-schema-draft-07.json":31,"./vocabularies/discriminator":56,"./vocabularies/draft7":58}],12:[function(require,module,exports){
+},{"./compile/codegen":15,"./compile/ref_error":20,"./compile/validate":28,"./core":31,"./refs/json-schema-draft-07.json":33,"./runtime/validation_error":37,"./vocabularies/discriminator":59,"./vocabularies/draft7":61}],14:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.regexpCode = exports.getProperty = exports.safeStringify = exports.stringify = exports.strConcat = exports.addCodeArg = exports.str = exports._ = exports.nil = exports._Code = exports.Name = exports.IDENTIFIER = exports._CodeOrName = void 0;
+exports.regexpCode = exports.getEsmExportName = exports.getProperty = exports.safeStringify = exports.stringify = exports.strConcat = exports.addCodeArg = exports.str = exports._ = exports.nil = exports._Code = exports.Name = exports.IDENTIFIER = exports._CodeOrName = void 0;
+// eslint-disable-next-line @typescript-eslint/no-extraneous-class
 class _CodeOrName {
 }
 exports._CodeOrName = _CodeOrName;
@@ -1919,12 +2620,20 @@ function getProperty(key) {
     return typeof key == "string" && exports.IDENTIFIER.test(key) ? new _Code(`.${key}`) : _ `[${key}]`;
 }
 exports.getProperty = getProperty;
+//Does best effort to format the name properly
+function getEsmExportName(key) {
+    if (typeof key == "string" && exports.IDENTIFIER.test(key)) {
+        return new _Code(`${key}`);
+    }
+    throw new Error(`CodeGen: invalid export name: ${key}, use explicit $id name mapping`);
+}
+exports.getEsmExportName = getEsmExportName;
 function regexpCode(rx) {
     return new _Code(rx.toString());
 }
 exports.regexpCode = regexpCode;
 
-},{}],13:[function(require,module,exports){
+},{}],15:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.or = exports.and = exports.not = exports.CodeGen = exports.operators = exports.varKinds = exports.ValueScopeName = exports.ValueScope = exports.Scope = exports.Name = exports.regexpCode = exports.stringify = exports.getProperty = exports.nil = exports.strConcat = exports.str = exports._ = void 0;
@@ -2377,7 +3086,7 @@ class CodeGen {
             code.push(key);
             if (key !== value || this.opts.es5) {
                 code.push(":");
-                code_1.addCodeArg(code, value);
+                (0, code_1.addCodeArg)(code, value);
             }
         }
         code.push("}");
@@ -2429,8 +3138,8 @@ class CodeGen {
         const name = this._scope.toName(nameOrPrefix);
         if (this.opts.es5) {
             const arr = iterable instanceof code_1.Name ? iterable : this.var("_arr", iterable);
-            return this.forRange("_i", 0, code_1._ `${arr}.length`, (i) => {
-                this.var(name, code_1._ `${arr}[${i}]`);
+            return this.forRange("_i", 0, (0, code_1._) `${arr}.length`, (i) => {
+                this.var(name, (0, code_1._) `${arr}[${i}]`);
                 forBody(name);
             });
         }
@@ -2440,7 +3149,7 @@ class CodeGen {
     // With option `ownProperties` replaced with a `for-of` loop for object keys
     forIn(nameOrPrefix, obj, forBody, varKind = this.opts.es5 ? scope_1.varKinds.var : scope_1.varKinds.const) {
         if (this.opts.ownProperties) {
-            return this.forOf(nameOrPrefix, code_1._ `Object.keys(${obj})`, forBody);
+            return this.forOf(nameOrPrefix, (0, code_1._) `Object.keys(${obj})`, forBody);
         }
         const name = this._scope.toName(nameOrPrefix);
         return this._for(new ForIter("in", varKind, name, obj), () => forBody(name));
@@ -2600,7 +3309,7 @@ function subtractNames(names, from) {
         names[n] = (names[n] || 0) - (from[n] || 0);
 }
 function not(x) {
-    return typeof x == "boolean" || typeof x == "number" || x === null ? !x : code_1._ `!${par(x)}`;
+    return typeof x == "boolean" || typeof x == "number" || x === null ? !x : (0, code_1._) `!${par(x)}`;
 }
 exports.not = not;
 const andCode = mappend(exports.operators.AND);
@@ -2616,13 +3325,13 @@ function or(...args) {
 }
 exports.or = or;
 function mappend(op) {
-    return (x, y) => (x === code_1.nil ? y : y === code_1.nil ? x : code_1._ `${par(x)} ${op} ${par(y)}`);
+    return (x, y) => (x === code_1.nil ? y : y === code_1.nil ? x : (0, code_1._) `${par(x)} ${op} ${par(y)}`);
 }
 function par(x) {
-    return x instanceof code_1.Name ? x : code_1._ `(${x})`;
+    return x instanceof code_1.Name ? x : (0, code_1._) `(${x})`;
 }
 
-},{"./code":12,"./scope":14}],14:[function(require,module,exports){
+},{"./code":14,"./scope":16}],16:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ValueScope = exports.ValueScopeName = exports.Scope = exports.varKinds = exports.UsedValueState = void 0;
@@ -2637,7 +3346,7 @@ var UsedValueState;
 (function (UsedValueState) {
     UsedValueState[UsedValueState["Started"] = 0] = "Started";
     UsedValueState[UsedValueState["Completed"] = 1] = "Completed";
-})(UsedValueState = exports.UsedValueState || (exports.UsedValueState = {}));
+})(UsedValueState || (exports.UsedValueState = UsedValueState = {}));
 exports.varKinds = {
     const: new code_1.Name("const"),
     let: new code_1.Name("let"),
@@ -2675,11 +3384,11 @@ class ValueScopeName extends code_1.Name {
     }
     setValue(value, { property, itemIndex }) {
         this.value = value;
-        this.scopePath = code_1._ `.${new code_1.Name(property)}[${itemIndex}]`;
+        this.scopePath = (0, code_1._) `.${new code_1.Name(property)}[${itemIndex}]`;
     }
 }
 exports.ValueScopeName = ValueScopeName;
-const line = code_1._ `\n`;
+const line = (0, code_1._) `\n`;
 class ValueScope extends Scope {
     constructor(opts) {
         super(opts);
@@ -2726,7 +3435,7 @@ class ValueScope extends Scope {
         return this._reduceValues(values, (name) => {
             if (name.scopePath === undefined)
                 throw new Error(`CodeGen: name "${name}" has no value`);
-            return code_1._ `${scopeName}${name.scopePath}`;
+            return (0, code_1._) `${scopeName}${name.scopePath}`;
         });
     }
     scopeCode(values = this._values, usedValues, getCode) {
@@ -2750,10 +3459,10 @@ class ValueScope extends Scope {
                 let c = valueCode(name);
                 if (c) {
                     const def = this.opts.es5 ? exports.varKinds.var : exports.varKinds.const;
-                    code = code_1._ `${code}${def} ${name} = ${c};${this.opts._n}`;
+                    code = (0, code_1._) `${code}${def} ${name} = ${c};${this.opts._n}`;
                 }
                 else if ((c = getCode === null || getCode === void 0 ? void 0 : getCode(name))) {
-                    code = code_1._ `${code}${c}${this.opts._n}`;
+                    code = (0, code_1._) `${code}${c}${this.opts._n}`;
                 }
                 else {
                     throw new ValueError(name);
@@ -2766,7 +3475,7 @@ class ValueScope extends Scope {
 }
 exports.ValueScope = ValueScope;
 
-},{"./code":12}],15:[function(require,module,exports){
+},{"./code":14}],17:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.extendErrors = exports.resetErrorsCount = exports.reportExtraError = exports.reportError = exports.keyword$DataError = exports.keywordError = void 0;
@@ -2774,12 +3483,12 @@ const codegen_1 = require("./codegen");
 const util_1 = require("./util");
 const names_1 = require("./names");
 exports.keywordError = {
-    message: ({ keyword }) => codegen_1.str `should pass "${keyword}" keyword validation`,
+    message: ({ keyword }) => (0, codegen_1.str) `must pass "${keyword}" keyword validation`,
 };
 exports.keyword$DataError = {
     message: ({ keyword, schemaType }) => schemaType
-        ? codegen_1.str `"${keyword}" keyword must be ${schemaType} ($data)`
-        : codegen_1.str `"${keyword}" keyword is invalid ($data)`,
+        ? (0, codegen_1.str) `"${keyword}" keyword must be ${schemaType} ($data)`
+        : (0, codegen_1.str) `"${keyword}" keyword is invalid ($data)`,
 };
 function reportError(cxt, error = exports.keywordError, errorPaths, overrideAllErrors) {
     const { it } = cxt;
@@ -2789,7 +3498,7 @@ function reportError(cxt, error = exports.keywordError, errorPaths, overrideAllE
         addError(gen, errObj);
     }
     else {
-        returnErrors(it, codegen_1._ `[${errObj}]`);
+        returnErrors(it, (0, codegen_1._) `[${errObj}]`);
     }
 }
 exports.reportError = reportError;
@@ -2805,7 +3514,7 @@ function reportExtraError(cxt, error = exports.keywordError, errorPaths) {
 exports.reportExtraError = reportExtraError;
 function resetErrorsCount(gen, errsCount) {
     gen.assign(names_1.default.errors, errsCount);
-    gen.if(codegen_1._ `${names_1.default.vErrors} !== null`, () => gen.if(errsCount, () => gen.assign(codegen_1._ `${names_1.default.vErrors}.length`, errsCount), () => gen.assign(names_1.default.vErrors, null)));
+    gen.if((0, codegen_1._) `${names_1.default.vErrors} !== null`, () => gen.if(errsCount, () => gen.assign((0, codegen_1._) `${names_1.default.vErrors}.length`, errsCount), () => gen.assign(names_1.default.vErrors, null)));
 }
 exports.resetErrorsCount = resetErrorsCount;
 function extendErrors({ gen, keyword, schemaValue, data, errsCount, it, }) {
@@ -2814,34 +3523,34 @@ function extendErrors({ gen, keyword, schemaValue, data, errsCount, it, }) {
         throw new Error("ajv implementation error");
     const err = gen.name("err");
     gen.forRange("i", errsCount, names_1.default.errors, (i) => {
-        gen.const(err, codegen_1._ `${names_1.default.vErrors}[${i}]`);
-        gen.if(codegen_1._ `${err}.instancePath === undefined`, () => gen.assign(codegen_1._ `${err}.instancePath`, codegen_1.strConcat(names_1.default.instancePath, it.errorPath)));
-        gen.assign(codegen_1._ `${err}.schemaPath`, codegen_1.str `${it.errSchemaPath}/${keyword}`);
+        gen.const(err, (0, codegen_1._) `${names_1.default.vErrors}[${i}]`);
+        gen.if((0, codegen_1._) `${err}.instancePath === undefined`, () => gen.assign((0, codegen_1._) `${err}.instancePath`, (0, codegen_1.strConcat)(names_1.default.instancePath, it.errorPath)));
+        gen.assign((0, codegen_1._) `${err}.schemaPath`, (0, codegen_1.str) `${it.errSchemaPath}/${keyword}`);
         if (it.opts.verbose) {
-            gen.assign(codegen_1._ `${err}.schema`, schemaValue);
-            gen.assign(codegen_1._ `${err}.data`, data);
+            gen.assign((0, codegen_1._) `${err}.schema`, schemaValue);
+            gen.assign((0, codegen_1._) `${err}.data`, data);
         }
     });
 }
 exports.extendErrors = extendErrors;
 function addError(gen, errObj) {
     const err = gen.const("err", errObj);
-    gen.if(codegen_1._ `${names_1.default.vErrors} === null`, () => gen.assign(names_1.default.vErrors, codegen_1._ `[${err}]`), codegen_1._ `${names_1.default.vErrors}.push(${err})`);
-    gen.code(codegen_1._ `${names_1.default.errors}++`);
+    gen.if((0, codegen_1._) `${names_1.default.vErrors} === null`, () => gen.assign(names_1.default.vErrors, (0, codegen_1._) `[${err}]`), (0, codegen_1._) `${names_1.default.vErrors}.push(${err})`);
+    gen.code((0, codegen_1._) `${names_1.default.errors}++`);
 }
 function returnErrors(it, errs) {
     const { gen, validateName, schemaEnv } = it;
     if (schemaEnv.$async) {
-        gen.throw(codegen_1._ `new ${it.ValidationError}(${errs})`);
+        gen.throw((0, codegen_1._) `new ${it.ValidationError}(${errs})`);
     }
     else {
-        gen.assign(codegen_1._ `${validateName}.errors`, errs);
+        gen.assign((0, codegen_1._) `${validateName}.errors`, errs);
         gen.return(false);
     }
 }
 const E = {
     keyword: new codegen_1.Name("keyword"),
-    schemaPath: new codegen_1.Name("schemaPath"),
+    schemaPath: new codegen_1.Name("schemaPath"), // also used in JTD errors
     params: new codegen_1.Name("params"),
     propertyName: new codegen_1.Name("propertyName"),
     message: new codegen_1.Name("message"),
@@ -2851,7 +3560,7 @@ const E = {
 function errorObjectCode(cxt, error, errorPaths) {
     const { createErrors } = cxt.it;
     if (createErrors === false)
-        return codegen_1._ `{}`;
+        return (0, codegen_1._) `{}`;
     return errorObject(cxt, error, errorPaths);
 }
 function errorObject(cxt, error, errorPaths = {}) {
@@ -2865,32 +3574,32 @@ function errorObject(cxt, error, errorPaths = {}) {
 }
 function errorInstancePath({ errorPath }, { instancePath }) {
     const instPath = instancePath
-        ? codegen_1.str `${errorPath}${util_1.getErrorPath(instancePath, util_1.Type.Str)}`
+        ? (0, codegen_1.str) `${errorPath}${(0, util_1.getErrorPath)(instancePath, util_1.Type.Str)}`
         : errorPath;
-    return [names_1.default.instancePath, codegen_1.strConcat(names_1.default.instancePath, instPath)];
+    return [names_1.default.instancePath, (0, codegen_1.strConcat)(names_1.default.instancePath, instPath)];
 }
 function errorSchemaPath({ keyword, it: { errSchemaPath } }, { schemaPath, parentSchema }) {
-    let schPath = parentSchema ? errSchemaPath : codegen_1.str `${errSchemaPath}/${keyword}`;
+    let schPath = parentSchema ? errSchemaPath : (0, codegen_1.str) `${errSchemaPath}/${keyword}`;
     if (schemaPath) {
-        schPath = codegen_1.str `${schPath}${util_1.getErrorPath(schemaPath, util_1.Type.Str)}`;
+        schPath = (0, codegen_1.str) `${schPath}${(0, util_1.getErrorPath)(schemaPath, util_1.Type.Str)}`;
     }
     return [E.schemaPath, schPath];
 }
 function extraErrorProps(cxt, { params, message }, keyValues) {
     const { keyword, data, schemaValue, it } = cxt;
     const { opts, propertyName, topSchemaRef, schemaPath } = it;
-    keyValues.push([E.keyword, keyword], [E.params, typeof params == "function" ? params(cxt) : params || codegen_1._ `{}`]);
+    keyValues.push([E.keyword, keyword], [E.params, typeof params == "function" ? params(cxt) : params || (0, codegen_1._) `{}`]);
     if (opts.messages) {
         keyValues.push([E.message, typeof message == "function" ? message(cxt) : message]);
     }
     if (opts.verbose) {
-        keyValues.push([E.schema, schemaValue], [E.parentSchema, codegen_1._ `${topSchemaRef}${schemaPath}`], [names_1.default.data, data]);
+        keyValues.push([E.schema, schemaValue], [E.parentSchema, (0, codegen_1._) `${topSchemaRef}${schemaPath}`], [names_1.default.data, data]);
     }
     if (propertyName)
         keyValues.push([E.propertyName, propertyName]);
 }
 
-},{"./codegen":13,"./names":17,"./util":21}],16:[function(require,module,exports){
+},{"./codegen":15,"./names":19,"./util":23}],18:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.resolveSchema = exports.getCompilingSchema = exports.resolveRef = exports.compileSchema = exports.SchemaEnv = void 0;
@@ -2900,7 +3609,6 @@ const names_1 = require("./names");
 const resolve_1 = require("./resolve");
 const util_1 = require("./util");
 const validate_1 = require("./validate");
-const URI = require("uri-js");
 class SchemaEnv {
     constructor(env) {
         var _a;
@@ -2912,7 +3620,7 @@ class SchemaEnv {
         this.schema = env.schema;
         this.schemaId = env.schemaId;
         this.root = env.root || this;
-        this.baseId = (_a = env.baseId) !== null && _a !== void 0 ? _a : resolve_1.normalizeId(schema === null || schema === void 0 ? void 0 : schema[env.schemaId || "$id"]);
+        this.baseId = (_a = env.baseId) !== null && _a !== void 0 ? _a : (0, resolve_1.normalizeId)(schema === null || schema === void 0 ? void 0 : schema[env.schemaId || "$id"]);
         this.schemaPath = env.schemaPath;
         this.localRefs = env.localRefs;
         this.meta = env.meta;
@@ -2929,7 +3637,7 @@ function compileSchema(sch) {
     const _sch = getCompilingSchema.call(this, sch);
     if (_sch)
         return _sch;
-    const rootId = resolve_1.getFullPath(sch.root.baseId); // TODO if getFullPath removed 1 tests fails
+    const rootId = (0, resolve_1.getFullPath)(this.opts.uriResolver, sch.root.baseId); // TODO if getFullPath removed 1 tests fails
     const { es5, lines } = this.opts.code;
     const { ownProperties } = this.opts;
     const gen = new codegen_1.CodeGen(this.scope, { es5, lines, ownProperties });
@@ -2937,7 +3645,7 @@ function compileSchema(sch) {
     if (sch.$async) {
         _ValidationError = gen.scopeValue("Error", {
             ref: validation_error_1.default,
-            code: codegen_1._ `require("ajv/dist/runtime/validation_error").default`,
+            code: (0, codegen_1._) `require("ajv/dist/runtime/validation_error").default`,
         });
     }
     const validateName = gen.scopeName("validate");
@@ -2949,12 +3657,12 @@ function compileSchema(sch) {
         parentData: names_1.default.parentData,
         parentDataProperty: names_1.default.parentDataProperty,
         dataNames: [names_1.default.data],
-        dataPathArr: [codegen_1.nil],
+        dataPathArr: [codegen_1.nil], // TODO can its length be used as dataLevel if nil is removed?
         dataLevel: 0,
         dataTypes: [],
         definedProperties: new Set(),
         topSchemaRef: gen.scopeValue("schema", this.opts.code.source === true
-            ? { ref: sch.schema, code: codegen_1.stringify(sch.schema) }
+            ? { ref: sch.schema, code: (0, codegen_1.stringify)(sch.schema) }
             : { ref: sch.schema }),
         validateName,
         ValidationError: _ValidationError,
@@ -2964,14 +3672,14 @@ function compileSchema(sch) {
         baseId: sch.baseId || rootId,
         schemaPath: codegen_1.nil,
         errSchemaPath: sch.schemaPath || (this.opts.jtd ? "" : "#"),
-        errorPath: codegen_1._ `""`,
+        errorPath: (0, codegen_1._) `""`,
         opts: this.opts,
         self: this,
     };
     let sourceCode;
     try {
         this._compilations.add(sch);
-        validate_1.validateFunctionCode(schemaCxt);
+        (0, validate_1.validateFunctionCode)(schemaCxt);
         gen.optimize(this.opts.code.optimize);
         // gen.optimize(1)
         const validateCode = gen.toString();
@@ -3000,7 +3708,7 @@ function compileSchema(sch) {
                 dynamicItems: items instanceof codegen_1.Name,
             };
             if (validate.source)
-                validate.source.evaluated = codegen_1.stringify(validate.evaluated);
+                validate.source.evaluated = (0, codegen_1.stringify)(validate.evaluated);
         }
         sch.validate = validate;
         return sch;
@@ -3020,7 +3728,7 @@ function compileSchema(sch) {
 exports.compileSchema = compileSchema;
 function resolveRef(root, baseId, ref) {
     var _a;
-    ref = resolve_1.resolveUrl(baseId, ref);
+    ref = (0, resolve_1.resolveUrl)(this.opts.uriResolver, baseId, ref);
     const schOrFunc = root.refs[ref];
     if (schOrFunc)
         return schOrFunc;
@@ -3037,7 +3745,7 @@ function resolveRef(root, baseId, ref) {
 }
 exports.resolveRef = resolveRef;
 function inlineOrCompile(sch) {
-    if (resolve_1.inlineRef(sch.schema, this.opts.inlineRefs))
+    if ((0, resolve_1.inlineRef)(sch.schema, this.opts.inlineRefs))
         return sch.schema;
     return sch.validate ? sch : compileSchema.call(this, sch);
 }
@@ -3066,14 +3774,14 @@ ref // reference to resolve
 function resolveSchema(root, // root object with properties schema, refs TODO below SchemaEnv is assigned to it
 ref // reference to resolve
 ) {
-    const p = URI.parse(ref);
-    const refPath = resolve_1._getFullPath(p);
-    let baseId = resolve_1.getFullPath(root.baseId);
+    const p = this.opts.uriResolver.parse(ref);
+    const refPath = (0, resolve_1._getFullPath)(this.opts.uriResolver, p);
+    let baseId = (0, resolve_1.getFullPath)(this.opts.uriResolver, root.baseId, undefined);
     // TODO `Object.keys(root.schema).length > 0` should not be needed - but removing breaks 2 tests
     if (Object.keys(root.schema).length > 0 && refPath === baseId) {
         return getJsonPointer.call(this, p, root);
     }
-    const id = resolve_1.normalizeId(refPath);
+    const id = (0, resolve_1.normalizeId)(refPath);
     const schOrRef = this.refs[id] || this.schemas[id];
     if (typeof schOrRef == "string") {
         const sch = resolveSchema.call(this, root, schOrRef);
@@ -3085,12 +3793,12 @@ ref // reference to resolve
         return;
     if (!schOrRef.validate)
         compileSchema.call(this, schOrRef);
-    if (id === resolve_1.normalizeId(ref)) {
+    if (id === (0, resolve_1.normalizeId)(ref)) {
         const { schema } = schOrRef;
         const { schemaId } = this.opts;
         const schId = schema[schemaId];
         if (schId)
-            baseId = resolve_1.resolveUrl(baseId, schId);
+            baseId = (0, resolve_1.resolveUrl)(this.opts.uriResolver, baseId, schId);
         return new SchemaEnv({ schema, schemaId, root, baseId });
     }
     return getJsonPointer.call(this, p, schOrRef);
@@ -3108,20 +3816,21 @@ function getJsonPointer(parsedRef, { baseId, schema, root }) {
     if (((_a = parsedRef.fragment) === null || _a === void 0 ? void 0 : _a[0]) !== "/")
         return;
     for (const part of parsedRef.fragment.slice(1).split("/")) {
-        if (typeof schema == "boolean")
+        if (typeof schema === "boolean")
             return;
-        schema = schema[util_1.unescapeFragment(part)];
-        if (schema === undefined)
+        const partSchema = schema[(0, util_1.unescapeFragment)(part)];
+        if (partSchema === undefined)
             return;
+        schema = partSchema;
         // TODO PREVENT_SCOPE_CHANGE could be defined in keyword def?
-        const schId = typeof schema == "object" && schema[this.opts.schemaId];
+        const schId = typeof schema === "object" && schema[this.opts.schemaId];
         if (!PREVENT_SCOPE_CHANGE.has(part) && schId) {
-            baseId = resolve_1.resolveUrl(baseId, schId);
+            baseId = (0, resolve_1.resolveUrl)(this.opts.uriResolver, baseId, schId);
         }
     }
     let env;
-    if (typeof schema != "boolean" && schema.$ref && !util_1.schemaHasRulesButRef(schema, this.RULES)) {
-        const $ref = resolve_1.resolveUrl(baseId, schema.$ref);
+    if (typeof schema != "boolean" && schema.$ref && !(0, util_1.schemaHasRulesButRef)(schema, this.RULES)) {
+        const $ref = (0, resolve_1.resolveUrl)(this.opts.uriResolver, baseId, schema.$ref);
         env = resolveSchema.call(this, root, $ref);
     }
     // even though resolution failed we need to return SchemaEnv to throw exception
@@ -3133,23 +3842,23 @@ function getJsonPointer(parsedRef, { baseId, schema, root }) {
     return undefined;
 }
 
-},{"../runtime/validation_error":34,"./codegen":13,"./names":17,"./resolve":19,"./util":21,"./validate":26,"uri-js":110}],17:[function(require,module,exports){
+},{"../runtime/validation_error":37,"./codegen":15,"./names":19,"./resolve":21,"./util":23,"./validate":28}],19:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const codegen_1 = require("./codegen");
 const names = {
     // validation function arguments
-    data: new codegen_1.Name("data"),
+    data: new codegen_1.Name("data"), // data passed to validation function
     // args passed from referencing schema
-    valCxt: new codegen_1.Name("valCxt"),
+    valCxt: new codegen_1.Name("valCxt"), // validation/data context - should not be used directly, it is destructured to the names below
     instancePath: new codegen_1.Name("instancePath"),
     parentData: new codegen_1.Name("parentData"),
     parentDataProperty: new codegen_1.Name("parentDataProperty"),
-    rootData: new codegen_1.Name("rootData"),
-    dynamicAnchors: new codegen_1.Name("dynamicAnchors"),
+    rootData: new codegen_1.Name("rootData"), // root data - same as the data passed to the first/top validation function
+    dynamicAnchors: new codegen_1.Name("dynamicAnchors"), // used to support recursiveRef and dynamicRef
     // function scoped variables
-    vErrors: new codegen_1.Name("vErrors"),
-    errors: new codegen_1.Name("errors"),
+    vErrors: new codegen_1.Name("vErrors"), // null or array of validation errors
+    errors: new codegen_1.Name("errors"), // counter of validation errors
     this: new codegen_1.Name("this"),
     // "globals"
     self: new codegen_1.Name("self"),
@@ -3162,27 +3871,26 @@ const names = {
 };
 exports.default = names;
 
-},{"./codegen":13}],18:[function(require,module,exports){
+},{"./codegen":15}],20:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const resolve_1 = require("./resolve");
 class MissingRefError extends Error {
-    constructor(baseId, ref, msg) {
+    constructor(resolver, baseId, ref, msg) {
         super(msg || `can't resolve reference ${ref} from id ${baseId}`);
-        this.missingRef = resolve_1.resolveUrl(baseId, ref);
-        this.missingSchema = resolve_1.normalizeId(resolve_1.getFullPath(this.missingRef));
+        this.missingRef = (0, resolve_1.resolveUrl)(resolver, baseId, ref);
+        this.missingSchema = (0, resolve_1.normalizeId)((0, resolve_1.getFullPath)(resolver, this.missingRef));
     }
 }
 exports.default = MissingRefError;
 
-},{"./resolve":19}],19:[function(require,module,exports){
+},{"./resolve":21}],21:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getSchemaRefs = exports.resolveUrl = exports.normalizeId = exports._getFullPath = exports.getFullPath = exports.inlineRef = void 0;
 const util_1 = require("./util");
 const equal = require("fast-deep-equal");
 const traverse = require("json-schema-traverse");
-const URI = require("uri-js");
 // TODO refactor to use keyword definitions
 const SIMPLE_INLINED = new Set([
     "type",
@@ -3240,22 +3948,23 @@ function countKeys(schema) {
         if (SIMPLE_INLINED.has(key))
             continue;
         if (typeof schema[key] == "object") {
-            util_1.eachItem(schema[key], (sch) => (count += countKeys(sch)));
+            (0, util_1.eachItem)(schema[key], (sch) => (count += countKeys(sch)));
         }
         if (count === Infinity)
             return Infinity;
     }
     return count;
 }
-function getFullPath(id = "", normalize) {
+function getFullPath(resolver, id = "", normalize) {
     if (normalize !== false)
         id = normalizeId(id);
-    const p = URI.parse(id);
-    return _getFullPath(p);
+    const p = resolver.parse(id);
+    return _getFullPath(resolver, p);
 }
 exports.getFullPath = getFullPath;
-function _getFullPath(p) {
-    return URI.serialize(p).split("#")[0] + "#";
+function _getFullPath(resolver, p) {
+    const serialized = resolver.serialize(p);
+    return serialized.split("#")[0] + "#";
 }
 exports._getFullPath = _getFullPath;
 const TRAILING_SLASH_HASH = /#\/?$/;
@@ -3263,33 +3972,35 @@ function normalizeId(id) {
     return id ? id.replace(TRAILING_SLASH_HASH, "") : "";
 }
 exports.normalizeId = normalizeId;
-function resolveUrl(baseId, id) {
+function resolveUrl(resolver, baseId, id) {
     id = normalizeId(id);
-    return URI.resolve(baseId, id);
+    return resolver.resolve(baseId, id);
 }
 exports.resolveUrl = resolveUrl;
 const ANCHOR = /^[a-z_][-a-z0-9._]*$/i;
-function getSchemaRefs(schema) {
+function getSchemaRefs(schema, baseId) {
     if (typeof schema == "boolean")
         return {};
-    const { schemaId } = this.opts;
-    const schId = normalizeId(schema[schemaId]);
+    const { schemaId, uriResolver } = this.opts;
+    const schId = normalizeId(schema[schemaId] || baseId);
     const baseIds = { "": schId };
-    const pathPrefix = getFullPath(schId, false);
+    const pathPrefix = getFullPath(uriResolver, schId, false);
     const localRefs = {};
     const schemaRefs = new Set();
     traverse(schema, { allKeys: true }, (sch, jsonPtr, _, parentJsonPtr) => {
         if (parentJsonPtr === undefined)
             return;
         const fullPath = pathPrefix + jsonPtr;
-        let baseId = baseIds[parentJsonPtr];
+        let innerBaseId = baseIds[parentJsonPtr];
         if (typeof sch[schemaId] == "string")
-            baseId = addRef.call(this, sch[schemaId]);
+            innerBaseId = addRef.call(this, sch[schemaId]);
         addAnchor.call(this, sch.$anchor);
         addAnchor.call(this, sch.$dynamicAnchor);
-        baseIds[jsonPtr] = baseId;
+        baseIds[jsonPtr] = innerBaseId;
         function addRef(ref) {
-            ref = normalizeId(baseId ? URI.resolve(baseId, ref) : ref);
+            // eslint-disable-next-line @typescript-eslint/unbound-method
+            const _resolve = this.opts.uriResolver.resolve;
+            ref = normalizeId(innerBaseId ? _resolve(innerBaseId, ref) : ref);
             if (schemaRefs.has(ref))
                 throw ambiguos(ref);
             schemaRefs.add(ref);
@@ -3329,7 +4040,7 @@ function getSchemaRefs(schema) {
 }
 exports.getSchemaRefs = getSchemaRefs;
 
-},{"./util":21,"fast-deep-equal":78,"json-schema-traverse":81,"uri-js":110}],20:[function(require,module,exports){
+},{"./util":23,"fast-deep-equal":81,"json-schema-traverse":87}],22:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getRules = exports.isJSONType = void 0;
@@ -3356,7 +4067,7 @@ function getRules() {
 }
 exports.getRules = getRules;
 
-},{}],21:[function(require,module,exports){
+},{}],23:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.checkStrictMode = exports.getErrorPath = exports.Type = exports.useFunc = exports.setEvaluated = exports.evaluatedPropsToName = exports.mergeEvaluated = exports.eachItem = exports.unescapeJsonPointer = exports.escapeJsonPointer = exports.escapeFragment = exports.unescapeFragment = exports.schemaRefOrVal = exports.schemaHasRulesButRef = exports.schemaHasRules = exports.checkUnknownRules = exports.alwaysValidSchema = exports.toHash = void 0;
@@ -3415,9 +4126,9 @@ function schemaRefOrVal({ topSchemaRef, schemaPath }, schema, keyword, $data) {
         if (typeof schema == "number" || typeof schema == "boolean")
             return schema;
         if (typeof schema == "string")
-            return codegen_1._ `${schema}`;
+            return (0, codegen_1._) `${schema}`;
     }
-    return codegen_1._ `${topSchemaRef}${schemaPath}${codegen_1.getProperty(keyword)}`;
+    return (0, codegen_1._) `${topSchemaRef}${schemaPath}${(0, codegen_1.getProperty)(keyword)}`;
 }
 exports.schemaRefOrVal = schemaRefOrVal;
 function unescapeFragment(str) {
@@ -3462,15 +4173,15 @@ function makeMergeEvaluated({ mergeNames, mergeToName, mergeValues, resultToName
 }
 exports.mergeEvaluated = {
     props: makeMergeEvaluated({
-        mergeNames: (gen, from, to) => gen.if(codegen_1._ `${to} !== true && ${from} !== undefined`, () => {
-            gen.if(codegen_1._ `${from} === true`, () => gen.assign(to, true), () => gen.assign(to, codegen_1._ `${to} || {}`).code(codegen_1._ `Object.assign(${to}, ${from})`));
+        mergeNames: (gen, from, to) => gen.if((0, codegen_1._) `${to} !== true && ${from} !== undefined`, () => {
+            gen.if((0, codegen_1._) `${from} === true`, () => gen.assign(to, true), () => gen.assign(to, (0, codegen_1._) `${to} || {}`).code((0, codegen_1._) `Object.assign(${to}, ${from})`));
         }),
-        mergeToName: (gen, from, to) => gen.if(codegen_1._ `${to} !== true`, () => {
+        mergeToName: (gen, from, to) => gen.if((0, codegen_1._) `${to} !== true`, () => {
             if (from === true) {
                 gen.assign(to, true);
             }
             else {
-                gen.assign(to, codegen_1._ `${to} || {}`);
+                gen.assign(to, (0, codegen_1._) `${to} || {}`);
                 setEvaluated(gen, to, from);
             }
         }),
@@ -3478,8 +4189,8 @@ exports.mergeEvaluated = {
         resultToName: evaluatedPropsToName,
     }),
     items: makeMergeEvaluated({
-        mergeNames: (gen, from, to) => gen.if(codegen_1._ `${to} !== true && ${from} !== undefined`, () => gen.assign(to, codegen_1._ `${from} === true ? true : ${to} > ${from} ? ${to} : ${from}`)),
-        mergeToName: (gen, from, to) => gen.if(codegen_1._ `${to} !== true`, () => gen.assign(to, from === true ? true : codegen_1._ `${to} > ${from} ? ${to} : ${from}`)),
+        mergeNames: (gen, from, to) => gen.if((0, codegen_1._) `${to} !== true && ${from} !== undefined`, () => gen.assign(to, (0, codegen_1._) `${from} === true ? true : ${to} > ${from} ? ${to} : ${from}`)),
+        mergeToName: (gen, from, to) => gen.if((0, codegen_1._) `${to} !== true`, () => gen.assign(to, from === true ? true : (0, codegen_1._) `${to} > ${from} ? ${to} : ${from}`)),
         mergeValues: (from, to) => (from === true ? true : Math.max(from, to)),
         resultToName: (gen, items) => gen.var("items", items),
     }),
@@ -3487,14 +4198,14 @@ exports.mergeEvaluated = {
 function evaluatedPropsToName(gen, ps) {
     if (ps === true)
         return gen.var("props", true);
-    const props = gen.var("props", codegen_1._ `{}`);
+    const props = gen.var("props", (0, codegen_1._) `{}`);
     if (ps !== undefined)
         setEvaluated(gen, props, ps);
     return props;
 }
 exports.evaluatedPropsToName = evaluatedPropsToName;
 function setEvaluated(gen, props, ps) {
-    Object.keys(ps).forEach((p) => gen.assign(codegen_1._ `${props}${codegen_1.getProperty(p)}`, true));
+    Object.keys(ps).forEach((p) => gen.assign((0, codegen_1._) `${props}${(0, codegen_1.getProperty)(p)}`, true));
 }
 exports.setEvaluated = setEvaluated;
 const snippets = {};
@@ -3509,20 +4220,20 @@ var Type;
 (function (Type) {
     Type[Type["Num"] = 0] = "Num";
     Type[Type["Str"] = 1] = "Str";
-})(Type = exports.Type || (exports.Type = {}));
+})(Type || (exports.Type = Type = {}));
 function getErrorPath(dataProp, dataPropType, jsPropertySyntax) {
     // let path
     if (dataProp instanceof codegen_1.Name) {
         const isNumber = dataPropType === Type.Num;
         return jsPropertySyntax
             ? isNumber
-                ? codegen_1._ `"[" + ${dataProp} + "]"`
-                : codegen_1._ `"['" + ${dataProp} + "']"`
+                ? (0, codegen_1._) `"[" + ${dataProp} + "]"`
+                : (0, codegen_1._) `"['" + ${dataProp} + "']"`
             : isNumber
-                ? codegen_1._ `"/" + ${dataProp}`
-                : codegen_1._ `"/" + ${dataProp}.replace(/~/g, "~0").replace(/\\//g, "~1")`; // TODO maybe use global escapePointer
+                ? (0, codegen_1._) `"/" + ${dataProp}`
+                : (0, codegen_1._) `"/" + ${dataProp}.replace(/~/g, "~0").replace(/\\//g, "~1")`; // TODO maybe use global escapePointer
     }
-    return jsPropertySyntax ? codegen_1.getProperty(dataProp).toString() : "/" + escapeJsonPointer(dataProp);
+    return jsPropertySyntax ? (0, codegen_1.getProperty)(dataProp).toString() : "/" + escapeJsonPointer(dataProp);
 }
 exports.getErrorPath = getErrorPath;
 function checkStrictMode(it, msg, mode = it.opts.strictSchema) {
@@ -3535,7 +4246,7 @@ function checkStrictMode(it, msg, mode = it.opts.strictSchema) {
 }
 exports.checkStrictMode = checkStrictMode;
 
-},{"./codegen":13,"./codegen/code":12}],22:[function(require,module,exports){
+},{"./codegen":15,"./codegen/code":14}],24:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.shouldUseRule = exports.shouldUseGroup = exports.schemaHasRulesForType = void 0;
@@ -3555,7 +4266,7 @@ function shouldUseRule(schema, rule) {
 }
 exports.shouldUseRule = shouldUseRule;
 
-},{}],23:[function(require,module,exports){
+},{}],25:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.boolOrEmptySchema = exports.topBoolOrEmptySchema = void 0;
@@ -3574,7 +4285,7 @@ function topBoolOrEmptySchema(it) {
         gen.return(names_1.default.data);
     }
     else {
-        gen.assign(codegen_1._ `${validateName}.errors`, null);
+        gen.assign((0, codegen_1._) `${validateName}.errors`, null);
         gen.return(true);
     }
 }
@@ -3603,10 +4314,10 @@ function falseSchemaError(it, overrideAllErrors) {
         params: {},
         it,
     };
-    errors_1.reportError(cxt, boolError, undefined, overrideAllErrors);
+    (0, errors_1.reportError)(cxt, boolError, undefined, overrideAllErrors);
 }
 
-},{"../codegen":13,"../errors":15,"../names":17}],24:[function(require,module,exports){
+},{"../codegen":15,"../errors":17,"../names":19}],26:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.reportTypeError = exports.checkDataTypes = exports.checkDataType = exports.coerceAndCheckDataType = exports.getJSONTypes = exports.getSchemaTypes = exports.DataType = void 0;
@@ -3619,7 +4330,7 @@ var DataType;
 (function (DataType) {
     DataType[DataType["Correct"] = 0] = "Correct";
     DataType[DataType["Wrong"] = 1] = "Wrong";
-})(DataType = exports.DataType || (exports.DataType = {}));
+})(DataType || (exports.DataType = DataType = {}));
 function getSchemaTypes(schema) {
     const types = getJSONTypes(schema.type);
     const hasNull = types.includes("null");
@@ -3637,6 +4348,7 @@ function getSchemaTypes(schema) {
     return types;
 }
 exports.getSchemaTypes = getSchemaTypes;
+// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
 function getJSONTypes(ts) {
     const types = Array.isArray(ts) ? ts : ts ? [ts] : [];
     if (types.every(rules_1.isJSONType))
@@ -3648,7 +4360,7 @@ function coerceAndCheckDataType(it, types) {
     const { gen, data, opts } = it;
     const coerceTo = coerceToTypes(types, opts.coerceTypes);
     const checkTypes = types.length > 0 &&
-        !(coerceTo.length === 0 && types.length === 1 && applicability_1.schemaHasRulesForType(it, types[0]));
+        !(coerceTo.length === 0 && types.length === 1 && (0, applicability_1.schemaHasRulesForType)(it, types[0]));
     if (checkTypes) {
         const wrongType = checkDataTypes(types, data, opts.strictNumbers, DataType.Wrong);
         gen.if(wrongType, () => {
@@ -3669,15 +4381,15 @@ function coerceToTypes(types, coerceTypes) {
 }
 function coerceData(it, types, coerceTo) {
     const { gen, data, opts } = it;
-    const dataType = gen.let("dataType", codegen_1._ `typeof ${data}`);
-    const coerced = gen.let("coerced", codegen_1._ `undefined`);
+    const dataType = gen.let("dataType", (0, codegen_1._) `typeof ${data}`);
+    const coerced = gen.let("coerced", (0, codegen_1._) `undefined`);
     if (opts.coerceTypes === "array") {
-        gen.if(codegen_1._ `${dataType} == 'object' && Array.isArray(${data}) && ${data}.length == 1`, () => gen
-            .assign(data, codegen_1._ `${data}[0]`)
-            .assign(dataType, codegen_1._ `typeof ${data}`)
+        gen.if((0, codegen_1._) `${dataType} == 'object' && Array.isArray(${data}) && ${data}.length == 1`, () => gen
+            .assign(data, (0, codegen_1._) `${data}[0]`)
+            .assign(dataType, (0, codegen_1._) `typeof ${data}`)
             .if(checkDataTypes(types, data, opts.strictNumbers), () => gen.assign(coerced, data)));
     }
-    gen.if(codegen_1._ `${coerced} !== undefined`);
+    gen.if((0, codegen_1._) `${coerced} !== undefined`);
     for (const t of coerceTo) {
         if (COERCIBLE.has(t) || (t === "array" && opts.coerceTypes === "array")) {
             coerceSpecificType(t);
@@ -3686,7 +4398,7 @@ function coerceData(it, types, coerceTo) {
     gen.else();
     reportTypeError(it);
     gen.endIf();
-    gen.if(codegen_1._ `${coerced} !== undefined`, () => {
+    gen.if((0, codegen_1._) `${coerced} !== undefined`, () => {
         gen.assign(data, coerced);
         assignParentData(it, coerced);
     });
@@ -3694,70 +4406,70 @@ function coerceData(it, types, coerceTo) {
         switch (t) {
             case "string":
                 gen
-                    .elseIf(codegen_1._ `${dataType} == "number" || ${dataType} == "boolean"`)
-                    .assign(coerced, codegen_1._ `"" + ${data}`)
-                    .elseIf(codegen_1._ `${data} === null`)
-                    .assign(coerced, codegen_1._ `""`);
+                    .elseIf((0, codegen_1._) `${dataType} == "number" || ${dataType} == "boolean"`)
+                    .assign(coerced, (0, codegen_1._) `"" + ${data}`)
+                    .elseIf((0, codegen_1._) `${data} === null`)
+                    .assign(coerced, (0, codegen_1._) `""`);
                 return;
             case "number":
                 gen
-                    .elseIf(codegen_1._ `${dataType} == "boolean" || ${data} === null
+                    .elseIf((0, codegen_1._) `${dataType} == "boolean" || ${data} === null
               || (${dataType} == "string" && ${data} && ${data} == +${data})`)
-                    .assign(coerced, codegen_1._ `+${data}`);
+                    .assign(coerced, (0, codegen_1._) `+${data}`);
                 return;
             case "integer":
                 gen
-                    .elseIf(codegen_1._ `${dataType} === "boolean" || ${data} === null
+                    .elseIf((0, codegen_1._) `${dataType} === "boolean" || ${data} === null
               || (${dataType} === "string" && ${data} && ${data} == +${data} && !(${data} % 1))`)
-                    .assign(coerced, codegen_1._ `+${data}`);
+                    .assign(coerced, (0, codegen_1._) `+${data}`);
                 return;
             case "boolean":
                 gen
-                    .elseIf(codegen_1._ `${data} === "false" || ${data} === 0 || ${data} === null`)
+                    .elseIf((0, codegen_1._) `${data} === "false" || ${data} === 0 || ${data} === null`)
                     .assign(coerced, false)
-                    .elseIf(codegen_1._ `${data} === "true" || ${data} === 1`)
+                    .elseIf((0, codegen_1._) `${data} === "true" || ${data} === 1`)
                     .assign(coerced, true);
                 return;
             case "null":
-                gen.elseIf(codegen_1._ `${data} === "" || ${data} === 0 || ${data} === false`);
+                gen.elseIf((0, codegen_1._) `${data} === "" || ${data} === 0 || ${data} === false`);
                 gen.assign(coerced, null);
                 return;
             case "array":
                 gen
-                    .elseIf(codegen_1._ `${dataType} === "string" || ${dataType} === "number"
+                    .elseIf((0, codegen_1._) `${dataType} === "string" || ${dataType} === "number"
               || ${dataType} === "boolean" || ${data} === null`)
-                    .assign(coerced, codegen_1._ `[${data}]`);
+                    .assign(coerced, (0, codegen_1._) `[${data}]`);
         }
     }
 }
 function assignParentData({ gen, parentData, parentDataProperty }, expr) {
     // TODO use gen.property
-    gen.if(codegen_1._ `${parentData} !== undefined`, () => gen.assign(codegen_1._ `${parentData}[${parentDataProperty}]`, expr));
+    gen.if((0, codegen_1._) `${parentData} !== undefined`, () => gen.assign((0, codegen_1._) `${parentData}[${parentDataProperty}]`, expr));
 }
 function checkDataType(dataType, data, strictNums, correct = DataType.Correct) {
     const EQ = correct === DataType.Correct ? codegen_1.operators.EQ : codegen_1.operators.NEQ;
     let cond;
     switch (dataType) {
         case "null":
-            return codegen_1._ `${data} ${EQ} null`;
+            return (0, codegen_1._) `${data} ${EQ} null`;
         case "array":
-            cond = codegen_1._ `Array.isArray(${data})`;
+            cond = (0, codegen_1._) `Array.isArray(${data})`;
             break;
         case "object":
-            cond = codegen_1._ `${data} && typeof ${data} == "object" && !Array.isArray(${data})`;
+            cond = (0, codegen_1._) `${data} && typeof ${data} == "object" && !Array.isArray(${data})`;
             break;
         case "integer":
-            cond = numCond(codegen_1._ `!(${data} % 1) && !isNaN(${data})`);
+            cond = numCond((0, codegen_1._) `!(${data} % 1) && !isNaN(${data})`);
             break;
         case "number":
             cond = numCond();
             break;
         default:
-            return codegen_1._ `typeof ${data} ${EQ} ${dataType}`;
+            return (0, codegen_1._) `typeof ${data} ${EQ} ${dataType}`;
     }
-    return correct === DataType.Correct ? cond : codegen_1.not(cond);
+    return correct === DataType.Correct ? cond : (0, codegen_1.not)(cond);
     function numCond(_cond = codegen_1.nil) {
-        return codegen_1.and(codegen_1._ `typeof ${data} == "number"`, _cond, strictNums ? codegen_1._ `isFinite(${data})` : codegen_1.nil);
+        return (0, codegen_1.and)((0, codegen_1._) `typeof ${data} == "number"`, _cond, strictNums ? (0, codegen_1._) `isFinite(${data})` : codegen_1.nil);
     }
 }
 exports.checkDataType = checkDataType;
@@ -3766,10 +4478,10 @@ function checkDataTypes(dataTypes, data, strictNums, correct) {
         return checkDataType(dataTypes[0], data, strictNums, correct);
     }
     let cond;
-    const types = util_1.toHash(dataTypes);
+    const types = (0, util_1.toHash)(dataTypes);
     if (types.array && types.object) {
-        const notObj = codegen_1._ `typeof ${data} != "object"`;
-        cond = types.null ? notObj : codegen_1._ `!${data} || ${notObj}`;
+        const notObj = (0, codegen_1._) `typeof ${data} != "object"`;
+        cond = types.null ? notObj : (0, codegen_1._) `!${data} || ${notObj}`;
         delete types.null;
         delete types.array;
         delete types.object;
@@ -3780,22 +4492,22 @@ function checkDataTypes(dataTypes, data, strictNums, correct) {
     if (types.number)
         delete types.integer;
     for (const t in types)
-        cond = codegen_1.and(cond, checkDataType(t, data, strictNums, correct));
+        cond = (0, codegen_1.and)(cond, checkDataType(t, data, strictNums, correct));
     return cond;
 }
 exports.checkDataTypes = checkDataTypes;
 const typeError = {
     message: ({ schema }) => `must be ${schema}`,
-    params: ({ schema, schemaValue }) => typeof schema == "string" ? codegen_1._ `{type: ${schema}}` : codegen_1._ `{type: ${schemaValue}}`,
+    params: ({ schema, schemaValue }) => typeof schema == "string" ? (0, codegen_1._) `{type: ${schema}}` : (0, codegen_1._) `{type: ${schemaValue}}`,
 };
 function reportTypeError(it) {
     const cxt = getTypeErrorContext(it);
-    errors_1.reportError(cxt, typeError);
+    (0, errors_1.reportError)(cxt, typeError);
 }
 exports.reportTypeError = reportTypeError;
 function getTypeErrorContext(it) {
     const { gen, data, schema } = it;
-    const schemaCode = util_1.schemaRefOrVal(it, schema, "type");
+    const schemaCode = (0, util_1.schemaRefOrVal)(it, schema, "type");
     return {
         gen,
         keyword: "type",
@@ -3809,7 +4521,7 @@ function getTypeErrorContext(it) {
     };
 }
 
-},{"../codegen":13,"../errors":15,"../rules":20,"../util":21,"./applicability":22}],25:[function(require,module,exports){
+},{"../codegen":15,"../errors":17,"../rules":22,"../util":23,"./applicability":24}],27:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.assignDefaults = void 0;
@@ -3831,21 +4543,21 @@ function assignDefault(it, prop, defaultValue) {
     const { gen, compositeRule, data, opts } = it;
     if (defaultValue === undefined)
         return;
-    const childData = codegen_1._ `${data}${codegen_1.getProperty(prop)}`;
+    const childData = (0, codegen_1._) `${data}${(0, codegen_1.getProperty)(prop)}`;
     if (compositeRule) {
-        util_1.checkStrictMode(it, `default is ignored for: ${childData}`);
+        (0, util_1.checkStrictMode)(it, `default is ignored for: ${childData}`);
         return;
     }
-    let condition = codegen_1._ `${childData} === undefined`;
+    let condition = (0, codegen_1._) `${childData} === undefined`;
     if (opts.useDefaults === "empty") {
-        condition = codegen_1._ `${condition} || ${childData} === null || ${childData} === ""`;
+        condition = (0, codegen_1._) `${condition} || ${childData} === null || ${childData} === ""`;
     }
     // `${childData} === undefined` +
     // (opts.useDefaults === "empty" ? ` || ${childData} === null || ${childData} === ""` : "")
-    gen.if(condition, codegen_1._ `${childData} = ${codegen_1.stringify(defaultValue)}`);
+    gen.if(condition, (0, codegen_1._) `${childData} = ${(0, codegen_1.stringify)(defaultValue)}`);
 }
 
-},{"../codegen":13,"../util":21}],26:[function(require,module,exports){
+},{"../codegen":15,"../util":23}],28:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getData = exports.KeywordCxt = exports.validateFunctionCode = void 0;
@@ -3870,39 +4582,39 @@ function validateFunctionCode(it) {
             return;
         }
     }
-    validateFunction(it, () => boolSchema_1.topBoolOrEmptySchema(it));
+    validateFunction(it, () => (0, boolSchema_1.topBoolOrEmptySchema)(it));
 }
 exports.validateFunctionCode = validateFunctionCode;
 function validateFunction({ gen, validateName, schema, schemaEnv, opts }, body) {
     if (opts.code.es5) {
-        gen.func(validateName, codegen_1._ `${names_1.default.data}, ${names_1.default.valCxt}`, schemaEnv.$async, () => {
-            gen.code(codegen_1._ `"use strict"; ${funcSourceUrl(schema, opts)}`);
+        gen.func(validateName, (0, codegen_1._) `${names_1.default.data}, ${names_1.default.valCxt}`, schemaEnv.$async, () => {
+            gen.code((0, codegen_1._) `"use strict"; ${funcSourceUrl(schema, opts)}`);
             destructureValCxtES5(gen, opts);
             gen.code(body);
         });
     }
     else {
-        gen.func(validateName, codegen_1._ `${names_1.default.data}, ${destructureValCxt(opts)}`, schemaEnv.$async, () => gen.code(funcSourceUrl(schema, opts)).code(body));
+        gen.func(validateName, (0, codegen_1._) `${names_1.default.data}, ${destructureValCxt(opts)}`, schemaEnv.$async, () => gen.code(funcSourceUrl(schema, opts)).code(body));
     }
 }
 function destructureValCxt(opts) {
-    return codegen_1._ `{${names_1.default.instancePath}="", ${names_1.default.parentData}, ${names_1.default.parentDataProperty}, ${names_1.default.rootData}=${names_1.default.data}${opts.dynamicRef ? codegen_1._ `, ${names_1.default.dynamicAnchors}={}` : codegen_1.nil}}={}`;
+    return (0, codegen_1._) `{${names_1.default.instancePath}="", ${names_1.default.parentData}, ${names_1.default.parentDataProperty}, ${names_1.default.rootData}=${names_1.default.data}${opts.dynamicRef ? (0, codegen_1._) `, ${names_1.default.dynamicAnchors}={}` : codegen_1.nil}}={}`;
 }
 function destructureValCxtES5(gen, opts) {
     gen.if(names_1.default.valCxt, () => {
-        gen.var(names_1.default.instancePath, codegen_1._ `${names_1.default.valCxt}.${names_1.default.instancePath}`);
-        gen.var(names_1.default.parentData, codegen_1._ `${names_1.default.valCxt}.${names_1.default.parentData}`);
-        gen.var(names_1.default.parentDataProperty, codegen_1._ `${names_1.default.valCxt}.${names_1.default.parentDataProperty}`);
-        gen.var(names_1.default.rootData, codegen_1._ `${names_1.default.valCxt}.${names_1.default.rootData}`);
+        gen.var(names_1.default.instancePath, (0, codegen_1._) `${names_1.default.valCxt}.${names_1.default.instancePath}`);
+        gen.var(names_1.default.parentData, (0, codegen_1._) `${names_1.default.valCxt}.${names_1.default.parentData}`);
+        gen.var(names_1.default.parentDataProperty, (0, codegen_1._) `${names_1.default.valCxt}.${names_1.default.parentDataProperty}`);
+        gen.var(names_1.default.rootData, (0, codegen_1._) `${names_1.default.valCxt}.${names_1.default.rootData}`);
         if (opts.dynamicRef)
-            gen.var(names_1.default.dynamicAnchors, codegen_1._ `${names_1.default.valCxt}.${names_1.default.dynamicAnchors}`);
+            gen.var(names_1.default.dynamicAnchors, (0, codegen_1._) `${names_1.default.valCxt}.${names_1.default.dynamicAnchors}`);
     }, () => {
-        gen.var(names_1.default.instancePath, codegen_1._ `""`);
-        gen.var(names_1.default.parentData, codegen_1._ `undefined`);
-        gen.var(names_1.default.parentDataProperty, codegen_1._ `undefined`);
+        gen.var(names_1.default.instancePath, (0, codegen_1._) `""`);
+        gen.var(names_1.default.parentData, (0, codegen_1._) `undefined`);
+        gen.var(names_1.default.parentDataProperty, (0, codegen_1._) `undefined`);
         gen.var(names_1.default.rootData, names_1.default.data);
         if (opts.dynamicRef)
-            gen.var(names_1.default.dynamicAnchors, codegen_1._ `{}`);
+            gen.var(names_1.default.dynamicAnchors, (0, codegen_1._) `{}`);
     });
 }
 function topSchemaObjCode(it) {
@@ -3923,13 +4635,13 @@ function topSchemaObjCode(it) {
 function resetEvaluated(it) {
     // TODO maybe some hook to execute it in the end to check whether props/items are Name, as in assignEvaluated
     const { gen, validateName } = it;
-    it.evaluated = gen.const("evaluated", codegen_1._ `${validateName}.evaluated`);
-    gen.if(codegen_1._ `${it.evaluated}.dynamicProps`, () => gen.assign(codegen_1._ `${it.evaluated}.props`, codegen_1._ `undefined`));
-    gen.if(codegen_1._ `${it.evaluated}.dynamicItems`, () => gen.assign(codegen_1._ `${it.evaluated}.items`, codegen_1._ `undefined`));
+    it.evaluated = gen.const("evaluated", (0, codegen_1._) `${validateName}.evaluated`);
+    gen.if((0, codegen_1._) `${it.evaluated}.dynamicProps`, () => gen.assign((0, codegen_1._) `${it.evaluated}.props`, (0, codegen_1._) `undefined`));
+    gen.if((0, codegen_1._) `${it.evaluated}.dynamicItems`, () => gen.assign((0, codegen_1._) `${it.evaluated}.items`, (0, codegen_1._) `undefined`));
 }
 function funcSourceUrl(schema, opts) {
     const schId = typeof schema == "object" && schema[opts.schemaId];
-    return schId && (opts.code.source || opts.code.process) ? codegen_1._ `/*# sourceURL=${schId} */` : codegen_1.nil;
+    return schId && (opts.code.source || opts.code.process) ? (0, codegen_1._) `/*# sourceURL=${schId} */` : codegen_1.nil;
 }
 // schema compilation - this function is used recursively to generate code for sub-schemas
 function subschemaCode(it, valid) {
@@ -3940,7 +4652,7 @@ function subschemaCode(it, valid) {
             return;
         }
     }
-    boolSchema_1.boolOrEmptySchema(it, valid);
+    (0, boolSchema_1.boolOrEmptySchema)(it, valid);
 }
 function schemaCxtHasRules({ schema, self }) {
     if (typeof schema == "boolean")
@@ -3962,35 +4674,35 @@ function subSchemaObjCode(it, valid) {
     const errsCount = gen.const("_errs", names_1.default.errors);
     typeAndKeywords(it, errsCount);
     // TODO var
-    gen.var(valid, codegen_1._ `${errsCount} === ${names_1.default.errors}`);
+    gen.var(valid, (0, codegen_1._) `${errsCount} === ${names_1.default.errors}`);
 }
 function checkKeywords(it) {
-    util_1.checkUnknownRules(it);
+    (0, util_1.checkUnknownRules)(it);
     checkRefsAndKeywords(it);
 }
 function typeAndKeywords(it, errsCount) {
     if (it.opts.jtd)
         return schemaKeywords(it, [], false, errsCount);
-    const types = dataType_1.getSchemaTypes(it.schema);
-    const checkedTypes = dataType_1.coerceAndCheckDataType(it, types);
+    const types = (0, dataType_1.getSchemaTypes)(it.schema);
+    const checkedTypes = (0, dataType_1.coerceAndCheckDataType)(it, types);
     schemaKeywords(it, types, !checkedTypes, errsCount);
 }
 function checkRefsAndKeywords(it) {
     const { schema, errSchemaPath, opts, self } = it;
-    if (schema.$ref && opts.ignoreKeywordsWithRef && util_1.schemaHasRulesButRef(schema, self.RULES)) {
+    if (schema.$ref && opts.ignoreKeywordsWithRef && (0, util_1.schemaHasRulesButRef)(schema, self.RULES)) {
         self.logger.warn(`$ref: keywords ignored in schema at path "${errSchemaPath}"`);
     }
 }
 function checkNoDefault(it) {
     const { schema, opts } = it;
     if (schema.default !== undefined && opts.useDefaults && opts.strictSchema) {
-        util_1.checkStrictMode(it, "default is ignored in the schema root");
+        (0, util_1.checkStrictMode)(it, "default is ignored in the schema root");
     }
 }
 function updateContext(it) {
     const schId = it.schema[it.opts.schemaId];
     if (schId)
-        it.baseId = resolve_1.resolveUrl(it.baseId, schId);
+        it.baseId = (0, resolve_1.resolveUrl)(it.opts.uriResolver, it.baseId, schId);
 }
 function checkAsyncSchema(it) {
     if (it.schema.$async && !it.schemaEnv.$async)
@@ -3999,37 +4711,37 @@ function checkAsyncSchema(it) {
 function commentKeyword({ gen, schemaEnv, schema, errSchemaPath, opts }) {
     const msg = schema.$comment;
     if (opts.$comment === true) {
-        gen.code(codegen_1._ `${names_1.default.self}.logger.log(${msg})`);
+        gen.code((0, codegen_1._) `${names_1.default.self}.logger.log(${msg})`);
     }
     else if (typeof opts.$comment == "function") {
-        const schemaPath = codegen_1.str `${errSchemaPath}/$comment`;
+        const schemaPath = (0, codegen_1.str) `${errSchemaPath}/$comment`;
         const rootName = gen.scopeValue("root", { ref: schemaEnv.root });
-        gen.code(codegen_1._ `${names_1.default.self}.opts.$comment(${msg}, ${schemaPath}, ${rootName}.schema)`);
+        gen.code((0, codegen_1._) `${names_1.default.self}.opts.$comment(${msg}, ${schemaPath}, ${rootName}.schema)`);
     }
 }
 function returnResults(it) {
     const { gen, schemaEnv, validateName, ValidationError, opts } = it;
     if (schemaEnv.$async) {
         // TODO assign unevaluated
-        gen.if(codegen_1._ `${names_1.default.errors} === 0`, () => gen.return(names_1.default.data), () => gen.throw(codegen_1._ `new ${ValidationError}(${names_1.default.vErrors})`));
+        gen.if((0, codegen_1._) `${names_1.default.errors} === 0`, () => gen.return(names_1.default.data), () => gen.throw((0, codegen_1._) `new ${ValidationError}(${names_1.default.vErrors})`));
     }
     else {
-        gen.assign(codegen_1._ `${validateName}.errors`, names_1.default.vErrors);
+        gen.assign((0, codegen_1._) `${validateName}.errors`, names_1.default.vErrors);
         if (opts.unevaluated)
             assignEvaluated(it);
-        gen.return(codegen_1._ `${names_1.default.errors} === 0`);
+        gen.return((0, codegen_1._) `${names_1.default.errors} === 0`);
     }
 }
 function assignEvaluated({ gen, evaluated, props, items }) {
     if (props instanceof codegen_1.Name)
-        gen.assign(codegen_1._ `${evaluated}.props`, props);
+        gen.assign((0, codegen_1._) `${evaluated}.props`, props);
     if (items instanceof codegen_1.Name)
-        gen.assign(codegen_1._ `${evaluated}.items`, items);
+        gen.assign((0, codegen_1._) `${evaluated}.items`, items);
 }
 function schemaKeywords(it, types, typeErrors, errsCount) {
     const { gen, schema, data, allErrors, opts, self } = it;
     const { RULES } = self;
-    if (schema.$ref && (opts.ignoreKeywordsWithRef || !util_1.schemaHasRulesButRef(schema, RULES))) {
+    if (schema.$ref && (opts.ignoreKeywordsWithRef || !(0, util_1.schemaHasRulesButRef)(schema, RULES))) {
         gen.block(() => keywordCode(it, "$ref", RULES.all.$ref.definition)); // TODO typecast
         return;
     }
@@ -4041,14 +4753,14 @@ function schemaKeywords(it, types, typeErrors, errsCount) {
         groupKeywords(RULES.post);
     });
     function groupKeywords(group) {
-        if (!applicability_1.shouldUseGroup(schema, group))
+        if (!(0, applicability_1.shouldUseGroup)(schema, group))
             return;
         if (group.type) {
-            gen.if(dataType_2.checkDataType(group.type, data, opts.strictNumbers));
+            gen.if((0, dataType_2.checkDataType)(group.type, data, opts.strictNumbers));
             iterateKeywords(it, group);
             if (types.length === 1 && types[0] === group.type && typeErrors) {
                 gen.else();
-                dataType_2.reportTypeError(it);
+                (0, dataType_2.reportTypeError)(it);
             }
             gen.endIf();
         }
@@ -4057,16 +4769,16 @@ function schemaKeywords(it, types, typeErrors, errsCount) {
         }
         // TODO make it "ok" call?
         if (!allErrors)
-            gen.if(codegen_1._ `${names_1.default.errors} === ${errsCount || 0}`);
+            gen.if((0, codegen_1._) `${names_1.default.errors} === ${errsCount || 0}`);
     }
 }
 function iterateKeywords(it, group) {
     const { gen, schema, opts: { useDefaults }, } = it;
     if (useDefaults)
-        defaults_1.assignDefaults(it, group.type);
+        (0, defaults_1.assignDefaults)(it, group.type);
     gen.block(() => {
         for (const rule of group.rules) {
-            if (applicability_1.shouldUseRule(schema, rule)) {
+            if ((0, applicability_1.shouldUseRule)(schema, rule)) {
                 keywordCode(it, rule.keyword, rule.definition, group.type);
             }
         }
@@ -4092,7 +4804,7 @@ function checkContextTypes(it, types) {
             strictTypesError(it, `type "${t}" not allowed by context "${it.dataTypes.join(",")}"`);
         }
     });
-    it.dataTypes = it.dataTypes.filter((t) => includesType(types, t));
+    narrowSchemaTypes(it, types);
 }
 function checkMultipleTypes(it, ts) {
     if (ts.length > 1 && !(ts.length === 2 && ts.includes("null"))) {
@@ -4103,7 +4815,7 @@ function checkKeywordTypes(it, ts) {
     const rules = it.self.RULES.all;
     for (const keyword in rules) {
         const rule = rules[keyword];
-        if (typeof rule == "object" && applicability_1.shouldUseRule(it.schema, rule)) {
+        if (typeof rule == "object" && (0, applicability_1.shouldUseRule)(it.schema, rule)) {
             const { type } = rule.definition;
             if (type.length && !type.some((t) => hasApplicableType(ts, t))) {
                 strictTypesError(it, `missing type "${type.join(",")}" for keyword "${keyword}"`);
@@ -4117,21 +4829,31 @@ function hasApplicableType(schTs, kwdT) {
 function includesType(ts, t) {
     return ts.includes(t) || (t === "integer" && ts.includes("number"));
 }
+function narrowSchemaTypes(it, withTypes) {
+    const ts = [];
+    for (const t of it.dataTypes) {
+        if (includesType(withTypes, t))
+            ts.push(t);
+        else if (withTypes.includes("integer") && t === "number")
+            ts.push("integer");
+    }
+    it.dataTypes = ts;
+}
 function strictTypesError(it, msg) {
     const schemaPath = it.schemaEnv.baseId + it.errSchemaPath;
     msg += ` at "${schemaPath}" (strictTypes)`;
-    util_1.checkStrictMode(it, msg, it.opts.strictTypes);
+    (0, util_1.checkStrictMode)(it, msg, it.opts.strictTypes);
 }
 class KeywordCxt {
     constructor(it, def, keyword) {
-        keyword_1.validateKeywordUsage(it, def, keyword);
+        (0, keyword_1.validateKeywordUsage)(it, def, keyword);
         this.gen = it.gen;
         this.allErrors = it.allErrors;
         this.keyword = keyword;
         this.data = it.data;
         this.schema = it.schema[keyword];
         this.$data = def.$data && it.opts.$data && this.schema && this.schema.$data;
-        this.schemaValue = util_1.schemaRefOrVal(it, this.schema, keyword, this.$data);
+        this.schemaValue = (0, util_1.schemaRefOrVal)(it, this.schema, keyword, this.$data);
         this.schemaType = def.schemaType;
         this.parentSchema = it.schema;
         this.params = {};
@@ -4142,7 +4864,7 @@ class KeywordCxt {
         }
         else {
             this.schemaCode = this.schemaValue;
-            if (!keyword_1.validSchemaType(this.schema, def.schemaType, def.allowUndefined)) {
+            if (!(0, keyword_1.validSchemaType)(this.schema, def.schemaType, def.allowUndefined)) {
                 throw new Error(`${keyword} value must be ${JSON.stringify(def.schemaType)}`);
             }
         }
@@ -4151,7 +4873,7 @@ class KeywordCxt {
         }
     }
     result(condition, successAction, failAction) {
-        this.failResult(codegen_1.not(condition), successAction, failAction);
+        this.failResult((0, codegen_1.not)(condition), successAction, failAction);
     }
     failResult(condition, successAction, failAction) {
         this.gen.if(condition);
@@ -4173,7 +4895,7 @@ class KeywordCxt {
         }
     }
     pass(condition, failAction) {
-        this.failResult(codegen_1.not(condition), undefined, failAction);
+        this.failResult((0, codegen_1.not)(condition), undefined, failAction);
     }
     fail(condition) {
         if (condition === undefined) {
@@ -4193,7 +4915,7 @@ class KeywordCxt {
         if (!this.$data)
             return this.fail(condition);
         const { schemaCode } = this;
-        this.fail(codegen_1._ `${schemaCode} !== undefined && (${codegen_1.or(this.invalid$data(), condition)})`);
+        this.fail((0, codegen_1._) `${schemaCode} !== undefined && (${(0, codegen_1.or)(this.invalid$data(), condition)})`);
     }
     error(append, errorParams, errorPaths) {
         if (errorParams) {
@@ -4209,12 +4931,12 @@ class KeywordCxt {
         (append ? errors_1.reportExtraError : errors_1.reportError)(this, this.def.error, errorPaths);
     }
     $dataError() {
-        errors_1.reportError(this, this.def.$dataError || errors_1.keyword$DataError);
+        (0, errors_1.reportError)(this, this.def.$dataError || errors_1.keyword$DataError);
     }
     reset() {
         if (this.errsCount === undefined)
             throw new Error('add "trackErrors" to keyword definition');
-        errors_1.resetErrorsCount(this.gen, this.errsCount);
+        (0, errors_1.resetErrorsCount)(this.gen, this.errsCount);
     }
     ok(cond) {
         if (!this.allErrors)
@@ -4236,7 +4958,7 @@ class KeywordCxt {
         if (!this.$data)
             return;
         const { gen, schemaCode, schemaType, def } = this;
-        gen.if(codegen_1.or(codegen_1._ `${schemaCode} === undefined`, $dataValid));
+        gen.if((0, codegen_1.or)((0, codegen_1._) `${schemaCode} === undefined`, $dataValid));
         if (valid !== codegen_1.nil)
             gen.assign(valid, true);
         if (schemaType.length || def.validateSchema) {
@@ -4249,29 +4971,29 @@ class KeywordCxt {
     }
     invalid$data() {
         const { gen, schemaCode, schemaType, def, it } = this;
-        return codegen_1.or(wrong$DataType(), invalid$DataSchema());
+        return (0, codegen_1.or)(wrong$DataType(), invalid$DataSchema());
         function wrong$DataType() {
             if (schemaType.length) {
                 /* istanbul ignore if */
                 if (!(schemaCode instanceof codegen_1.Name))
                     throw new Error("ajv implementation error");
                 const st = Array.isArray(schemaType) ? schemaType : [schemaType];
-                return codegen_1._ `${dataType_2.checkDataTypes(st, schemaCode, it.opts.strictNumbers, dataType_2.DataType.Wrong)}`;
+                return (0, codegen_1._) `${(0, dataType_2.checkDataTypes)(st, schemaCode, it.opts.strictNumbers, dataType_2.DataType.Wrong)}`;
             }
             return codegen_1.nil;
         }
         function invalid$DataSchema() {
             if (def.validateSchema) {
                 const validateSchemaRef = gen.scopeValue("validate$data", { ref: def.validateSchema }); // TODO value.code for standalone
-                return codegen_1._ `!${validateSchemaRef}(${schemaCode})`;
+                return (0, codegen_1._) `!${validateSchemaRef}(${schemaCode})`;
             }
             return codegen_1.nil;
         }
     }
     subschema(appl, valid) {
-        const subschema = subschema_1.getSubschema(this.it, appl);
-        subschema_1.extendSubschemaData(subschema, this.it, appl);
-        subschema_1.extendSubschemaMode(subschema, appl);
+        const subschema = (0, subschema_1.getSubschema)(this.it, appl);
+        (0, subschema_1.extendSubschemaData)(subschema, this.it, appl);
+        (0, subschema_1.extendSubschemaMode)(subschema, appl);
         const nextContext = { ...this.it, ...subschema, items: undefined, props: undefined };
         subschemaCode(nextContext, valid);
         return nextContext;
@@ -4302,13 +5024,13 @@ function keywordCode(it, keyword, def, ruleType) {
         def.code(cxt, ruleType);
     }
     else if (cxt.$data && def.validate) {
-        keyword_1.funcKeywordCode(cxt, def);
+        (0, keyword_1.funcKeywordCode)(cxt, def);
     }
     else if ("macro" in def) {
-        keyword_1.macroKeywordCode(cxt, def);
+        (0, keyword_1.macroKeywordCode)(cxt, def);
     }
     else if (def.compile || def.validate) {
-        keyword_1.funcKeywordCode(cxt, def);
+        (0, keyword_1.funcKeywordCode)(cxt, def);
     }
 }
 const JSON_POINTER = /^\/(?:[^~]|~0|~1)*$/;
@@ -4345,8 +5067,8 @@ function getData($data, { dataLevel, dataNames, dataPathArr }) {
     const segments = jsonPointer.split("/");
     for (const segment of segments) {
         if (segment) {
-            data = codegen_1._ `${data}${codegen_1.getProperty(util_1.unescapeJsonPointer(segment))}`;
-            expr = codegen_1._ `${expr} && ${data}`;
+            data = (0, codegen_1._) `${data}${(0, codegen_1.getProperty)((0, util_1.unescapeJsonPointer)(segment))}`;
+            expr = (0, codegen_1._) `${expr} && ${data}`;
         }
     }
     return expr;
@@ -4356,7 +5078,7 @@ function getData($data, { dataLevel, dataNames, dataPathArr }) {
 }
 exports.getData = getData;
 
-},{"../codegen":13,"../errors":15,"../names":17,"../resolve":19,"../util":21,"./applicability":22,"./boolSchema":23,"./dataType":24,"./defaults":25,"./keyword":27,"./subschema":28}],27:[function(require,module,exports){
+},{"../codegen":15,"../errors":17,"../names":19,"../resolve":21,"../util":23,"./applicability":24,"./boolSchema":25,"./dataType":26,"./defaults":27,"./keyword":29,"./subschema":30}],29:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.validateKeywordUsage = exports.validSchemaType = exports.funcKeywordCode = exports.macroKeywordCode = void 0;
@@ -4406,37 +5128,37 @@ function funcKeywordCode(cxt, def) {
     }
     function validateAsync() {
         const ruleErrs = gen.let("ruleErrs", null);
-        gen.try(() => assignValid(codegen_1._ `await `), (e) => gen.assign(valid, false).if(codegen_1._ `${e} instanceof ${it.ValidationError}`, () => gen.assign(ruleErrs, codegen_1._ `${e}.errors`), () => gen.throw(e)));
+        gen.try(() => assignValid((0, codegen_1._) `await `), (e) => gen.assign(valid, false).if((0, codegen_1._) `${e} instanceof ${it.ValidationError}`, () => gen.assign(ruleErrs, (0, codegen_1._) `${e}.errors`), () => gen.throw(e)));
         return ruleErrs;
     }
     function validateSync() {
-        const validateErrs = codegen_1._ `${validateRef}.errors`;
+        const validateErrs = (0, codegen_1._) `${validateRef}.errors`;
         gen.assign(validateErrs, null);
         assignValid(codegen_1.nil);
         return validateErrs;
     }
-    function assignValid(_await = def.async ? codegen_1._ `await ` : codegen_1.nil) {
+    function assignValid(_await = def.async ? (0, codegen_1._) `await ` : codegen_1.nil) {
         const passCxt = it.opts.passContext ? names_1.default.this : names_1.default.self;
         const passSchema = !(("compile" in def && !$data) || def.schema === false);
-        gen.assign(valid, codegen_1._ `${_await}${code_1.callValidateCode(cxt, validateRef, passCxt, passSchema)}`, def.modifying);
+        gen.assign(valid, (0, codegen_1._) `${_await}${(0, code_1.callValidateCode)(cxt, validateRef, passCxt, passSchema)}`, def.modifying);
     }
     function reportErrs(errors) {
         var _a;
-        gen.if(codegen_1.not((_a = def.valid) !== null && _a !== void 0 ? _a : valid), errors);
+        gen.if((0, codegen_1.not)((_a = def.valid) !== null && _a !== void 0 ? _a : valid), errors);
     }
 }
 exports.funcKeywordCode = funcKeywordCode;
 function modifyData(cxt) {
     const { gen, data, it } = cxt;
-    gen.if(it.parentData, () => gen.assign(data, codegen_1._ `${it.parentData}[${it.parentDataProperty}]`));
+    gen.if(it.parentData, () => gen.assign(data, (0, codegen_1._) `${it.parentData}[${it.parentDataProperty}]`));
 }
 function addErrs(cxt, errs) {
     const { gen } = cxt;
-    gen.if(codegen_1._ `Array.isArray(${errs})`, () => {
+    gen.if((0, codegen_1._) `Array.isArray(${errs})`, () => {
         gen
-            .assign(names_1.default.vErrors, codegen_1._ `${names_1.default.vErrors} === null ? ${errs} : ${names_1.default.vErrors}.concat(${errs})`)
-            .assign(names_1.default.errors, codegen_1._ `${names_1.default.vErrors}.length`);
-        errors_1.extendErrors(cxt);
+            .assign(names_1.default.vErrors, (0, codegen_1._) `${names_1.default.vErrors} === null ? ${errs} : ${names_1.default.vErrors}.concat(${errs})`)
+            .assign(names_1.default.errors, (0, codegen_1._) `${names_1.default.vErrors}.length`);
+        (0, errors_1.extendErrors)(cxt);
     }, () => cxt.error());
 }
 function checkAsyncKeyword({ schemaEnv }, def) {
@@ -4446,7 +5168,7 @@ function checkAsyncKeyword({ schemaEnv }, def) {
 function useKeyword(gen, keyword, result) {
     if (result === undefined)
         throw new Error(`keyword "${keyword}" failed to compile`);
-    return gen.scopeValue("keyword", typeof result == "function" ? { ref: result } : { ref: result, code: codegen_1.stringify(result) });
+    return gen.scopeValue("keyword", typeof result == "function" ? { ref: result } : { ref: result, code: (0, codegen_1.stringify)(result) });
 }
 function validSchemaType(schema, schemaType, allowUndefined = false) {
     // TODO add tests
@@ -4481,7 +5203,7 @@ function validateKeywordUsage({ schema, opts, self, errSchemaPath }, def, keywor
 }
 exports.validateKeywordUsage = validateKeywordUsage;
 
-},{"../../vocabularies/code":52,"../codegen":13,"../errors":15,"../names":17}],28:[function(require,module,exports){
+},{"../../vocabularies/code":55,"../codegen":15,"../errors":17,"../names":19}],30:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.extendSubschemaMode = exports.extendSubschemaData = exports.getSubschema = void 0;
@@ -4496,13 +5218,13 @@ function getSubschema(it, { keyword, schemaProp, schema, schemaPath, errSchemaPa
         return schemaProp === undefined
             ? {
                 schema: sch,
-                schemaPath: codegen_1._ `${it.schemaPath}${codegen_1.getProperty(keyword)}`,
+                schemaPath: (0, codegen_1._) `${it.schemaPath}${(0, codegen_1.getProperty)(keyword)}`,
                 errSchemaPath: `${it.errSchemaPath}/${keyword}`,
             }
             : {
                 schema: sch[schemaProp],
-                schemaPath: codegen_1._ `${it.schemaPath}${codegen_1.getProperty(keyword)}${codegen_1.getProperty(schemaProp)}`,
-                errSchemaPath: `${it.errSchemaPath}/${keyword}/${util_1.escapeFragment(schemaProp)}`,
+                schemaPath: (0, codegen_1._) `${it.schemaPath}${(0, codegen_1.getProperty)(keyword)}${(0, codegen_1.getProperty)(schemaProp)}`,
+                errSchemaPath: `${it.errSchemaPath}/${keyword}/${(0, util_1.escapeFragment)(schemaProp)}`,
             };
     }
     if (schema !== undefined) {
@@ -4526,10 +5248,10 @@ function extendSubschemaData(subschema, it, { dataProp, dataPropType: dpType, da
     const { gen } = it;
     if (dataProp !== undefined) {
         const { errorPath, dataPathArr, opts } = it;
-        const nextData = gen.let("data", codegen_1._ `${it.data}${codegen_1.getProperty(dataProp)}`, true);
+        const nextData = gen.let("data", (0, codegen_1._) `${it.data}${(0, codegen_1.getProperty)(dataProp)}`, true);
         dataContextProps(nextData);
-        subschema.errorPath = codegen_1.str `${errorPath}${util_1.getErrorPath(dataProp, dpType, opts.jsPropertySyntax)}`;
-        subschema.parentDataProperty = codegen_1._ `${dataProp}`;
+        subschema.errorPath = (0, codegen_1.str) `${errorPath}${(0, util_1.getErrorPath)(dataProp, dpType, opts.jsPropertySyntax)}`;
+        subschema.parentDataProperty = (0, codegen_1._) `${dataProp}`;
         subschema.dataPathArr = [...dataPathArr, subschema.parentDataProperty];
     }
     if (data !== undefined) {
@@ -4563,7 +5285,7 @@ function extendSubschemaMode(subschema, { jtdDiscriminator, jtdMetadata, composi
 }
 exports.extendSubschemaMode = extendSubschemaMode;
 
-},{"../codegen":13,"../util":21}],29:[function(require,module,exports){
+},{"../codegen":15,"../util":23}],31:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = void 0;
@@ -4585,6 +5307,9 @@ const resolve_1 = require("./compile/resolve");
 const dataType_1 = require("./compile/validate/dataType");
 const util_1 = require("./compile/util");
 const $dataRefSchema = require("./refs/data.json");
+const uri_1 = require("./runtime/uri");
+const defaultRegExp = (str, flags) => new RegExp(str, flags);
+defaultRegExp.code = "new RegExp";
 const META_IGNORE_OPTIONS = ["removeAdditional", "useDefaults", "coerceTypes"];
 const EXT_SCOPE_NAMES = new Set([
     "validate",
@@ -4626,35 +5351,38 @@ const deprecatedOptions = {
 const MAX_EXPRESSION = 200;
 // eslint-disable-next-line complexity
 function requiredOptions(o) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0;
     const s = o.strict;
     const _optz = (_a = o.code) === null || _a === void 0 ? void 0 : _a.optimize;
     const optimize = _optz === true || _optz === undefined ? 1 : _optz || 0;
+    const regExp = (_c = (_b = o.code) === null || _b === void 0 ? void 0 : _b.regExp) !== null && _c !== void 0 ? _c : defaultRegExp;
+    const uriResolver = (_d = o.uriResolver) !== null && _d !== void 0 ? _d : uri_1.default;
     return {
-        strictSchema: (_c = (_b = o.strictSchema) !== null && _b !== void 0 ? _b : s) !== null && _c !== void 0 ? _c : true,
-        strictNumbers: (_e = (_d = o.strictNumbers) !== null && _d !== void 0 ? _d : s) !== null && _e !== void 0 ? _e : true,
-        strictTypes: (_g = (_f = o.strictTypes) !== null && _f !== void 0 ? _f : s) !== null && _g !== void 0 ? _g : "log",
-        strictTuples: (_j = (_h = o.strictTuples) !== null && _h !== void 0 ? _h : s) !== null && _j !== void 0 ? _j : "log",
-        strictRequired: (_l = (_k = o.strictRequired) !== null && _k !== void 0 ? _k : s) !== null && _l !== void 0 ? _l : false,
-        code: o.code ? { ...o.code, optimize } : { optimize },
-        loopRequired: (_m = o.loopRequired) !== null && _m !== void 0 ? _m : MAX_EXPRESSION,
-        loopEnum: (_o = o.loopEnum) !== null && _o !== void 0 ? _o : MAX_EXPRESSION,
-        meta: (_p = o.meta) !== null && _p !== void 0 ? _p : true,
-        messages: (_q = o.messages) !== null && _q !== void 0 ? _q : true,
-        inlineRefs: (_r = o.inlineRefs) !== null && _r !== void 0 ? _r : true,
-        schemaId: (_s = o.schemaId) !== null && _s !== void 0 ? _s : "$id",
-        addUsedSchema: (_t = o.addUsedSchema) !== null && _t !== void 0 ? _t : true,
-        validateSchema: (_u = o.validateSchema) !== null && _u !== void 0 ? _u : true,
-        validateFormats: (_v = o.validateFormats) !== null && _v !== void 0 ? _v : true,
-        unicodeRegExp: (_w = o.unicodeRegExp) !== null && _w !== void 0 ? _w : true,
-        int32range: (_x = o.int32range) !== null && _x !== void 0 ? _x : true,
+        strictSchema: (_f = (_e = o.strictSchema) !== null && _e !== void 0 ? _e : s) !== null && _f !== void 0 ? _f : true,
+        strictNumbers: (_h = (_g = o.strictNumbers) !== null && _g !== void 0 ? _g : s) !== null && _h !== void 0 ? _h : true,
+        strictTypes: (_k = (_j = o.strictTypes) !== null && _j !== void 0 ? _j : s) !== null && _k !== void 0 ? _k : "log",
+        strictTuples: (_m = (_l = o.strictTuples) !== null && _l !== void 0 ? _l : s) !== null && _m !== void 0 ? _m : "log",
+        strictRequired: (_p = (_o = o.strictRequired) !== null && _o !== void 0 ? _o : s) !== null && _p !== void 0 ? _p : false,
+        code: o.code ? { ...o.code, optimize, regExp } : { optimize, regExp },
+        loopRequired: (_q = o.loopRequired) !== null && _q !== void 0 ? _q : MAX_EXPRESSION,
+        loopEnum: (_r = o.loopEnum) !== null && _r !== void 0 ? _r : MAX_EXPRESSION,
+        meta: (_s = o.meta) !== null && _s !== void 0 ? _s : true,
+        messages: (_t = o.messages) !== null && _t !== void 0 ? _t : true,
+        inlineRefs: (_u = o.inlineRefs) !== null && _u !== void 0 ? _u : true,
+        schemaId: (_v = o.schemaId) !== null && _v !== void 0 ? _v : "$id",
+        addUsedSchema: (_w = o.addUsedSchema) !== null && _w !== void 0 ? _w : true,
+        validateSchema: (_x = o.validateSchema) !== null && _x !== void 0 ? _x : true,
+        validateFormats: (_y = o.validateFormats) !== null && _y !== void 0 ? _y : true,
+        unicodeRegExp: (_z = o.unicodeRegExp) !== null && _z !== void 0 ? _z : true,
+        int32range: (_0 = o.int32range) !== null && _0 !== void 0 ? _0 : true,
+        uriResolver: uriResolver,
     };
 }
 class Ajv {
     constructor(opts = {}) {
         this.schemas = {};
         this.refs = {};
-        this.formats = {};
+        this.formats = Object.create(null);
         this._compilations = new Set();
         this._loading = {};
         this._cache = new Map();
@@ -4664,7 +5392,7 @@ class Ajv {
         this.logger = getLogger(opts.logger);
         const formatOpt = opts.validateFormats;
         opts.validateFormats = false;
-        this.RULES = rules_1.getRules();
+        this.RULES = (0, rules_1.getRules)();
         checkOptions.call(this, removedOptions, opts, "NOT SUPPORTED");
         checkOptions.call(this, deprecatedOptions, opts, "DEPRECATED", "warn");
         this._metaOpts = getMetaSchemaOptions.call(this);
@@ -4698,6 +5426,7 @@ class Ajv {
         return (this.opts.defaultMeta = typeof meta == "object" ? meta[schemaId] || meta : undefined);
     }
     validate(schemaKeyRef, // key, ref or schema object
+    // eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
     data // to be validated
     ) {
         let v;
@@ -4789,7 +5518,7 @@ class Ajv {
                 throw new Error(`schema ${schemaId} must be string`);
             }
         }
-        key = resolve_1.normalizeId(key || id);
+        key = (0, resolve_1.normalizeId)(key || id);
         this._checkUnique(key);
         this.schemas[key] = this._addSchema(schema, _meta, key, _validateSchema, true);
         return this;
@@ -4872,7 +5601,7 @@ class Ajv {
                 this._cache.delete(cacheKey);
                 let id = schemaKeyRef[this.opts.schemaId];
                 if (id) {
-                    id = resolve_1.normalizeId(id);
+                    id = (0, resolve_1.normalizeId)(id);
                     delete this.schemas[id];
                     delete this.refs[id];
                 }
@@ -4910,16 +5639,16 @@ class Ajv {
         }
         checkKeyword.call(this, keyword, def);
         if (!def) {
-            util_1.eachItem(keyword, (kwd) => addRule.call(this, kwd));
+            (0, util_1.eachItem)(keyword, (kwd) => addRule.call(this, kwd));
             return this;
         }
         keywordMetaschema.call(this, def);
         const definition = {
             ...def,
-            type: dataType_1.getJSONTypes(def.type),
-            schemaType: dataType_1.getJSONTypes(def.schemaType),
+            type: (0, dataType_1.getJSONTypes)(def.type),
+            schemaType: (0, dataType_1.getJSONTypes)(def.schemaType),
         };
-        util_1.eachItem(keyword, definition.type.length === 0
+        (0, util_1.eachItem)(keyword, definition.type.length === 0
             ? (k) => addRule.call(this, k, definition)
             : (k) => definition.type.forEach((t) => addRule.call(this, k, definition, t)));
         return this;
@@ -5006,8 +5735,8 @@ class Ajv {
         let sch = this._cache.get(schema);
         if (sch !== undefined)
             return sch;
-        const localRefs = resolve_1.getSchemaRefs.call(this, schema);
-        baseId = resolve_1.normalizeId(id || baseId);
+        baseId = (0, resolve_1.normalizeId)(id || baseId);
+        const localRefs = resolve_1.getSchemaRefs.call(this, schema, baseId);
         sch = new compile_1.SchemaEnv({ schema, schemaId, meta, baseId, localRefs });
         this._cache.set(sch.schema, sch);
         if (addSchema && !baseId.startsWith("#")) {
@@ -5046,9 +5775,9 @@ class Ajv {
         }
     }
 }
-exports.default = Ajv;
 Ajv.ValidationError = validation_error_1.default;
 Ajv.MissingRefError = ref_error_1.default;
+exports.default = Ajv;
 function checkOptions(checkOpts, options, msg, log = "error") {
     for (const key in checkOpts) {
         const opt = key;
@@ -5057,7 +5786,7 @@ function checkOptions(checkOpts, options, msg, log = "error") {
     }
 }
 function getSchEnv(keyRef) {
-    keyRef = resolve_1.normalizeId(keyRef); // TODO tests fail without this line
+    keyRef = (0, resolve_1.normalizeId)(keyRef); // TODO tests fail without this line
     return this.schemas[keyRef] || this.refs[keyRef];
 }
 function addInitialSchemas() {
@@ -5109,7 +5838,7 @@ function getLogger(logger) {
 const KEYWORD_NAME = /^[a-z_$][a-z0-9_$:-]*$/i;
 function checkKeyword(keyword, def) {
     const { RULES } = this;
-    util_1.eachItem(keyword, (kwd) => {
+    (0, util_1.eachItem)(keyword, (kwd) => {
         if (RULES.keywords[kwd])
             throw new Error(`Keyword ${kwd} is already defined`);
         if (!KEYWORD_NAME.test(kwd))
@@ -5139,8 +5868,8 @@ function addRule(keyword, definition, dataType) {
         keyword,
         definition: {
             ...definition,
-            type: dataType_1.getJSONTypes(definition.type),
-            schemaType: dataType_1.getJSONTypes(definition.schemaType),
+            type: (0, dataType_1.getJSONTypes)(definition.type),
+            schemaType: (0, dataType_1.getJSONTypes)(definition.schemaType),
         },
     };
     if (definition.before)
@@ -5175,7 +5904,7 @@ function schemaOrData(schema) {
     return { anyOf: [schema, $dataRef] };
 }
 
-},{"./compile":16,"./compile/codegen":13,"./compile/ref_error":18,"./compile/resolve":19,"./compile/rules":20,"./compile/util":21,"./compile/validate":26,"./compile/validate/dataType":24,"./refs/data.json":30,"./runtime/validation_error":34}],30:[function(require,module,exports){
+},{"./compile":18,"./compile/codegen":15,"./compile/ref_error":20,"./compile/resolve":21,"./compile/rules":22,"./compile/util":23,"./compile/validate":28,"./compile/validate/dataType":26,"./refs/data.json":32,"./runtime/uri":36,"./runtime/validation_error":37}],32:[function(require,module,exports){
 module.exports={
   "$id": "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#",
   "description": "Meta-schema for $data reference (JSON AnySchema extension proposal)",
@@ -5190,7 +5919,7 @@ module.exports={
   "additionalProperties": false
 }
 
-},{}],31:[function(require,module,exports){
+},{}],33:[function(require,module,exports){
 module.exports={
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "http://json-schema.org/draft-07/schema#",
@@ -5343,7 +6072,7 @@ module.exports={
   "default": true
 }
 
-},{}],32:[function(require,module,exports){
+},{}],34:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 // https://github.com/ajv-validator/ajv/issues/889
@@ -5351,7 +6080,7 @@ const equal = require("fast-deep-equal");
 equal.code = 'require("ajv/dist/runtime/equal").default';
 exports.default = equal;
 
-},{"fast-deep-equal":78}],33:[function(require,module,exports){
+},{"fast-deep-equal":81}],35:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 // https://mathiasbynens.be/notes/javascript-encoding
@@ -5376,7 +6105,14 @@ function ucs2length(str) {
 exports.default = ucs2length;
 ucs2length.code = 'require("ajv/dist/runtime/ucs2length").default';
 
-},{}],34:[function(require,module,exports){
+},{}],36:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const uri = require("fast-uri");
+uri.code = 'require("ajv/dist/runtime/uri").default';
+exports.default = uri;
+
+},{"fast-uri":82}],37:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 class ValidationError extends Error {
@@ -5388,15 +6124,15 @@ class ValidationError extends Error {
 }
 exports.default = ValidationError;
 
-},{}],35:[function(require,module,exports){
+},{}],38:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.validateAdditionalItems = void 0;
 const codegen_1 = require("../../compile/codegen");
 const util_1 = require("../../compile/util");
 const error = {
-    message: ({ params: { len } }) => codegen_1.str `must NOT have more than ${len} items`,
-    params: ({ params: { len } }) => codegen_1._ `{limit: ${len}}`,
+    message: ({ params: { len } }) => (0, codegen_1.str) `must NOT have more than ${len} items`,
+    params: ({ params: { len } }) => (0, codegen_1._) `{limit: ${len}}`,
 };
 const def = {
     keyword: "additionalItems",
@@ -5408,7 +6144,7 @@ const def = {
         const { parentSchema, it } = cxt;
         const { items } = parentSchema;
         if (!Array.isArray(items)) {
-            util_1.checkStrictMode(it, '"additionalItems" is ignored when "items" is not an array of schemas');
+            (0, util_1.checkStrictMode)(it, '"additionalItems" is ignored when "items" is not an array of schemas');
             return;
         }
         validateAdditionalItems(cxt, items);
@@ -5417,28 +6153,28 @@ const def = {
 function validateAdditionalItems(cxt, items) {
     const { gen, schema, data, keyword, it } = cxt;
     it.items = true;
-    const len = gen.const("len", codegen_1._ `${data}.length`);
+    const len = gen.const("len", (0, codegen_1._) `${data}.length`);
     if (schema === false) {
         cxt.setParams({ len: items.length });
-        cxt.pass(codegen_1._ `${len} <= ${items.length}`);
+        cxt.pass((0, codegen_1._) `${len} <= ${items.length}`);
     }
-    else if (typeof schema == "object" && !util_1.alwaysValidSchema(it, schema)) {
-        const valid = gen.var("valid", codegen_1._ `${len} <= ${items.length}`); // TODO var
-        gen.if(codegen_1.not(valid), () => validateItems(valid));
+    else if (typeof schema == "object" && !(0, util_1.alwaysValidSchema)(it, schema)) {
+        const valid = gen.var("valid", (0, codegen_1._) `${len} <= ${items.length}`); // TODO var
+        gen.if((0, codegen_1.not)(valid), () => validateItems(valid));
         cxt.ok(valid);
     }
     function validateItems(valid) {
         gen.forRange("i", items.length, len, (i) => {
             cxt.subschema({ keyword, dataProp: i, dataPropType: util_1.Type.Num }, valid);
             if (!it.allErrors)
-                gen.if(codegen_1.not(valid), () => gen.break());
+                gen.if((0, codegen_1.not)(valid), () => gen.break());
         });
     }
 }
 exports.validateAdditionalItems = validateAdditionalItems;
 exports.default = def;
 
-},{"../../compile/codegen":13,"../../compile/util":21}],36:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/util":23}],39:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const code_1 = require("../code");
@@ -5447,7 +6183,7 @@ const names_1 = require("../../compile/names");
 const util_1 = require("../../compile/util");
 const error = {
     message: "must NOT have additional properties",
-    params: ({ params }) => codegen_1._ `{additionalProperty: ${params.additionalProperty}}`,
+    params: ({ params }) => (0, codegen_1._) `{additionalProperty: ${params.additionalProperty}}`,
 };
 const def = {
     keyword: "additionalProperties",
@@ -5463,12 +6199,12 @@ const def = {
             throw new Error("ajv implementation error");
         const { allErrors, opts } = it;
         it.props = true;
-        if (opts.removeAdditional !== "all" && util_1.alwaysValidSchema(it, schema))
+        if (opts.removeAdditional !== "all" && (0, util_1.alwaysValidSchema)(it, schema))
             return;
-        const props = code_1.allSchemaProperties(parentSchema.properties);
-        const patProps = code_1.allSchemaProperties(parentSchema.patternProperties);
+        const props = (0, code_1.allSchemaProperties)(parentSchema.properties);
+        const patProps = (0, code_1.allSchemaProperties)(parentSchema.patternProperties);
         checkAdditionalProperties();
-        cxt.ok(codegen_1._ `${errsCount} === ${names_1.default.errors}`);
+        cxt.ok((0, codegen_1._) `${errsCount} === ${names_1.default.errors}`);
         function checkAdditionalProperties() {
             gen.forIn("key", data, (key) => {
                 if (!props.length && !patProps.length)
@@ -5481,22 +6217,22 @@ const def = {
             let definedProp;
             if (props.length > 8) {
                 // TODO maybe an option instead of hard-coded 8?
-                const propsSchema = util_1.schemaRefOrVal(it, parentSchema.properties, "properties");
-                definedProp = code_1.isOwnProperty(gen, propsSchema, key);
+                const propsSchema = (0, util_1.schemaRefOrVal)(it, parentSchema.properties, "properties");
+                definedProp = (0, code_1.isOwnProperty)(gen, propsSchema, key);
             }
             else if (props.length) {
-                definedProp = codegen_1.or(...props.map((p) => codegen_1._ `${key} === ${p}`));
+                definedProp = (0, codegen_1.or)(...props.map((p) => (0, codegen_1._) `${key} === ${p}`));
             }
             else {
                 definedProp = codegen_1.nil;
             }
             if (patProps.length) {
-                definedProp = codegen_1.or(definedProp, ...patProps.map((p) => codegen_1._ `${code_1.usePattern(cxt, p)}.test(${key})`));
+                definedProp = (0, codegen_1.or)(definedProp, ...patProps.map((p) => (0, codegen_1._) `${(0, code_1.usePattern)(cxt, p)}.test(${key})`));
             }
-            return codegen_1.not(definedProp);
+            return (0, codegen_1.not)(definedProp);
         }
         function deleteAdditional(key) {
-            gen.code(codegen_1._ `delete ${data}[${key}]`);
+            gen.code((0, codegen_1._) `delete ${data}[${key}]`);
         }
         function additionalPropertyCode(key) {
             if (opts.removeAdditional === "all" || (opts.removeAdditional && schema === false)) {
@@ -5510,11 +6246,11 @@ const def = {
                     gen.break();
                 return;
             }
-            if (typeof schema == "object" && !util_1.alwaysValidSchema(it, schema)) {
+            if (typeof schema == "object" && !(0, util_1.alwaysValidSchema)(it, schema)) {
                 const valid = gen.name("valid");
                 if (opts.removeAdditional === "failing") {
                     applyAdditionalSchema(key, valid, false);
-                    gen.if(codegen_1.not(valid), () => {
+                    gen.if((0, codegen_1.not)(valid), () => {
                         cxt.reset();
                         deleteAdditional(key);
                     });
@@ -5522,7 +6258,7 @@ const def = {
                 else {
                     applyAdditionalSchema(key, valid);
                     if (!allErrors)
-                        gen.if(codegen_1.not(valid), () => gen.break());
+                        gen.if((0, codegen_1.not)(valid), () => gen.break());
                 }
             }
         }
@@ -5545,7 +6281,7 @@ const def = {
 };
 exports.default = def;
 
-},{"../../compile/codegen":13,"../../compile/names":17,"../../compile/util":21,"../code":52}],37:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/names":19,"../../compile/util":23,"../code":55}],40:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const util_1 = require("../../compile/util");
@@ -5559,7 +6295,7 @@ const def = {
             throw new Error("ajv implementation error");
         const valid = gen.name("valid");
         schema.forEach((sch, i) => {
-            if (util_1.alwaysValidSchema(it, sch))
+            if ((0, util_1.alwaysValidSchema)(it, sch))
                 return;
             const schCxt = cxt.subschema({ keyword: "allOf", schemaProp: i }, valid);
             cxt.ok(valid);
@@ -5569,7 +6305,7 @@ const def = {
 };
 exports.default = def;
 
-},{"../../compile/util":21}],38:[function(require,module,exports){
+},{"../../compile/util":23}],41:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const code_1 = require("../code");
@@ -5582,16 +6318,16 @@ const def = {
 };
 exports.default = def;
 
-},{"../code":52}],39:[function(require,module,exports){
+},{"../code":55}],42:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const codegen_1 = require("../../compile/codegen");
 const util_1 = require("../../compile/util");
 const error = {
     message: ({ params: { min, max } }) => max === undefined
-        ? codegen_1.str `must contain at least ${min} valid item(s)`
-        : codegen_1.str `must contain at least ${min} and no more than ${max} valid item(s)`,
-    params: ({ params: { min, max } }) => max === undefined ? codegen_1._ `{minContains: ${min}}` : codegen_1._ `{minContains: ${min}, maxContains: ${max}}`,
+        ? (0, codegen_1.str) `must contain at least ${min} valid item(s)`
+        : (0, codegen_1.str) `must contain at least ${min} and no more than ${max} valid item(s)`,
+    params: ({ params: { min, max } }) => max === undefined ? (0, codegen_1._) `{minContains: ${min}}` : (0, codegen_1._) `{minContains: ${min}, maxContains: ${max}}`,
 };
 const def = {
     keyword: "contains",
@@ -5612,21 +6348,21 @@ const def = {
         else {
             min = 1;
         }
-        const len = gen.const("len", codegen_1._ `${data}.length`);
+        const len = gen.const("len", (0, codegen_1._) `${data}.length`);
         cxt.setParams({ min, max });
         if (max === undefined && min === 0) {
-            util_1.checkStrictMode(it, `"minContains" == 0 without "maxContains": "contains" keyword ignored`);
+            (0, util_1.checkStrictMode)(it, `"minContains" == 0 without "maxContains": "contains" keyword ignored`);
             return;
         }
         if (max !== undefined && min > max) {
-            util_1.checkStrictMode(it, `"minContains" > "maxContains" is always invalid`);
+            (0, util_1.checkStrictMode)(it, `"minContains" > "maxContains" is always invalid`);
             cxt.fail();
             return;
         }
-        if (util_1.alwaysValidSchema(it, schema)) {
-            let cond = codegen_1._ `${len} >= ${min}`;
+        if ((0, util_1.alwaysValidSchema)(it, schema)) {
+            let cond = (0, codegen_1._) `${len} >= ${min}`;
             if (max !== undefined)
-                cond = codegen_1._ `${cond} && ${len} <= ${max}`;
+                cond = (0, codegen_1._) `${cond} && ${len} <= ${max}`;
             cxt.pass(cond);
             return;
         }
@@ -5635,13 +6371,21 @@ const def = {
         if (max === undefined && min === 1) {
             validateItems(valid, () => gen.if(valid, () => gen.break()));
         }
+        else if (min === 0) {
+            gen.let(valid, true);
+            if (max !== undefined)
+                gen.if((0, codegen_1._) `${data}.length > 0`, validateItemsWithCount);
+        }
         else {
             gen.let(valid, false);
+            validateItemsWithCount();
+        }
+        cxt.result(valid, () => cxt.reset());
+        function validateItemsWithCount() {
             const schValid = gen.name("_valid");
             const count = gen.let("count", 0);
             validateItems(schValid, () => gen.if(schValid, () => checkLimits(count)));
         }
-        cxt.result(valid, () => cxt.reset());
         function validateItems(_valid, block) {
             gen.forRange("i", 0, len, (i) => {
                 cxt.subschema({
@@ -5654,23 +6398,23 @@ const def = {
             });
         }
         function checkLimits(count) {
-            gen.code(codegen_1._ `${count}++`);
+            gen.code((0, codegen_1._) `${count}++`);
             if (max === undefined) {
-                gen.if(codegen_1._ `${count} >= ${min}`, () => gen.assign(valid, true).break());
+                gen.if((0, codegen_1._) `${count} >= ${min}`, () => gen.assign(valid, true).break());
             }
             else {
-                gen.if(codegen_1._ `${count} > ${max}`, () => gen.assign(valid, false).break());
+                gen.if((0, codegen_1._) `${count} > ${max}`, () => gen.assign(valid, false).break());
                 if (min === 1)
                     gen.assign(valid, true);
                 else
-                    gen.if(codegen_1._ `${count} >= ${min}`, () => gen.assign(valid, true));
+                    gen.if((0, codegen_1._) `${count} >= ${min}`, () => gen.assign(valid, true));
             }
         }
     },
 };
 exports.default = def;
 
-},{"../../compile/codegen":13,"../../compile/util":21}],40:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/util":23}],43:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.validateSchemaDeps = exports.validatePropertyDeps = exports.error = void 0;
@@ -5680,9 +6424,9 @@ const code_1 = require("../code");
 exports.error = {
     message: ({ params: { property, depsCount, deps } }) => {
         const property_ies = depsCount === 1 ? "property" : "properties";
-        return codegen_1.str `must have ${property_ies} ${deps} when property ${property} is present`;
+        return (0, codegen_1.str) `must have ${property_ies} ${deps} when property ${property} is present`;
     },
-    params: ({ params: { property, depsCount, deps, missingProperty } }) => codegen_1._ `{property: ${property},
+    params: ({ params: { property, depsCount, deps, missingProperty } }) => (0, codegen_1._) `{property: ${property},
     missingProperty: ${missingProperty},
     depsCount: ${depsCount},
     deps: ${deps}}`, // TODO change to reference
@@ -5718,7 +6462,7 @@ function validatePropertyDeps(cxt, propertyDeps = cxt.schema) {
         const deps = propertyDeps[prop];
         if (deps.length === 0)
             continue;
-        const hasProperty = code_1.propertyInData(gen, data, prop, it.opts.ownProperties);
+        const hasProperty = (0, code_1.propertyInData)(gen, data, prop, it.opts.ownProperties);
         cxt.setParams({
             property: prop,
             depsCount: deps.length,
@@ -5727,13 +6471,13 @@ function validatePropertyDeps(cxt, propertyDeps = cxt.schema) {
         if (it.allErrors) {
             gen.if(hasProperty, () => {
                 for (const depProp of deps) {
-                    code_1.checkReportMissingProp(cxt, depProp);
+                    (0, code_1.checkReportMissingProp)(cxt, depProp);
                 }
             });
         }
         else {
-            gen.if(codegen_1._ `${hasProperty} && (${code_1.checkMissingProp(cxt, deps, missing)})`);
-            code_1.reportMissingProp(cxt, missing);
+            gen.if((0, codegen_1._) `${hasProperty} && (${(0, code_1.checkMissingProp)(cxt, deps, missing)})`);
+            (0, code_1.reportMissingProp)(cxt, missing);
             gen.else();
         }
     }
@@ -5743,9 +6487,9 @@ function validateSchemaDeps(cxt, schemaDeps = cxt.schema) {
     const { gen, data, keyword, it } = cxt;
     const valid = gen.name("valid");
     for (const prop in schemaDeps) {
-        if (util_1.alwaysValidSchema(it, schemaDeps[prop]))
+        if ((0, util_1.alwaysValidSchema)(it, schemaDeps[prop]))
             continue;
-        gen.if(code_1.propertyInData(gen, data, prop, it.opts.ownProperties), () => {
+        gen.if((0, code_1.propertyInData)(gen, data, prop, it.opts.ownProperties), () => {
             const schCxt = cxt.subschema({ keyword, schemaProp: prop }, valid);
             cxt.mergeValidEvaluated(schCxt, valid);
         }, () => gen.var(valid, true) // TODO var
@@ -5756,14 +6500,14 @@ function validateSchemaDeps(cxt, schemaDeps = cxt.schema) {
 exports.validateSchemaDeps = validateSchemaDeps;
 exports.default = def;
 
-},{"../../compile/codegen":13,"../../compile/util":21,"../code":52}],41:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/util":23,"../code":55}],44:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const codegen_1 = require("../../compile/codegen");
 const util_1 = require("../../compile/util");
 const error = {
-    message: ({ params }) => codegen_1.str `must match "${params.ifClause}" schema`,
-    params: ({ params }) => codegen_1._ `{failingKeyword: ${params.ifClause}}`,
+    message: ({ params }) => (0, codegen_1.str) `must match "${params.ifClause}" schema`,
+    params: ({ params }) => (0, codegen_1._) `{failingKeyword: ${params.ifClause}}`,
 };
 const def = {
     keyword: "if",
@@ -5773,7 +6517,7 @@ const def = {
     code(cxt) {
         const { gen, parentSchema, it } = cxt;
         if (parentSchema.then === undefined && parentSchema.else === undefined) {
-            util_1.checkStrictMode(it, '"if" without "then" and "else" is ignored');
+            (0, util_1.checkStrictMode)(it, '"if" without "then" and "else" is ignored');
         }
         const hasThen = hasSchema(it, "then");
         const hasElse = hasSchema(it, "else");
@@ -5792,7 +6536,7 @@ const def = {
             gen.if(schValid, validateClause("then"));
         }
         else {
-            gen.if(codegen_1.not(schValid), validateClause("else"));
+            gen.if((0, codegen_1.not)(schValid), validateClause("else"));
         }
         cxt.pass(valid, () => cxt.error(true));
         function validateIf() {
@@ -5810,7 +6554,7 @@ const def = {
                 gen.assign(valid, schValid);
                 cxt.mergeValidEvaluated(schCxt, valid);
                 if (ifClause)
-                    gen.assign(ifClause, codegen_1._ `${keyword}`);
+                    gen.assign(ifClause, (0, codegen_1._) `${keyword}`);
                 else
                     cxt.setParams({ ifClause: keyword });
             };
@@ -5819,11 +6563,11 @@ const def = {
 };
 function hasSchema(it, keyword) {
     const schema = it.schema[keyword];
-    return schema !== undefined && !util_1.alwaysValidSchema(it, schema);
+    return schema !== undefined && !(0, util_1.alwaysValidSchema)(it, schema);
 }
 exports.default = def;
 
-},{"../../compile/codegen":13,"../../compile/util":21}],42:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/util":23}],45:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const additionalItems_1 = require("./additionalItems");
@@ -5868,7 +6612,7 @@ function getApplicator(draft2020 = false) {
 }
 exports.default = getApplicator;
 
-},{"./additionalItems":35,"./additionalProperties":36,"./allOf":37,"./anyOf":38,"./contains":39,"./dependencies":40,"./if":41,"./items":43,"./items2020":44,"./not":45,"./oneOf":46,"./patternProperties":47,"./prefixItems":48,"./properties":49,"./propertyNames":50,"./thenElse":51}],43:[function(require,module,exports){
+},{"./additionalItems":38,"./additionalProperties":39,"./allOf":40,"./anyOf":41,"./contains":42,"./dependencies":43,"./if":44,"./items":46,"./items2020":47,"./not":48,"./oneOf":49,"./patternProperties":50,"./prefixItems":51,"./properties":52,"./propertyNames":53,"./thenElse":54}],46:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.validateTuple = void 0;
@@ -5885,9 +6629,9 @@ const def = {
         if (Array.isArray(schema))
             return validateTuple(cxt, "additionalItems", schema);
         it.items = true;
-        if (util_1.alwaysValidSchema(it, schema))
+        if ((0, util_1.alwaysValidSchema)(it, schema))
             return;
-        cxt.ok(code_1.validateArray(cxt));
+        cxt.ok((0, code_1.validateArray)(cxt));
     },
 };
 function validateTuple(cxt, extraItems, schArr = cxt.schema) {
@@ -5897,11 +6641,11 @@ function validateTuple(cxt, extraItems, schArr = cxt.schema) {
         it.items = util_1.mergeEvaluated.items(gen, schArr.length, it.items);
     }
     const valid = gen.name("valid");
-    const len = gen.const("len", codegen_1._ `${data}.length`);
+    const len = gen.const("len", (0, codegen_1._) `${data}.length`);
     schArr.forEach((sch, i) => {
-        if (util_1.alwaysValidSchema(it, sch))
+        if ((0, util_1.alwaysValidSchema)(it, sch))
             return;
-        gen.if(codegen_1._ `${len} > ${i}`, () => cxt.subschema({
+        gen.if((0, codegen_1._) `${len} > ${i}`, () => cxt.subschema({
             keyword,
             schemaProp: i,
             dataProp: i,
@@ -5914,14 +6658,14 @@ function validateTuple(cxt, extraItems, schArr = cxt.schema) {
         const fullTuple = l === sch.minItems && (l === sch.maxItems || sch[extraItems] === false);
         if (opts.strictTuples && !fullTuple) {
             const msg = `"${keyword}" is ${l}-tuple, but minItems or maxItems/${extraItems} are not specified or different at path "${errSchemaPath}"`;
-            util_1.checkStrictMode(it, msg, opts.strictTuples);
+            (0, util_1.checkStrictMode)(it, msg, opts.strictTuples);
         }
     }
 }
 exports.validateTuple = validateTuple;
 exports.default = def;
 
-},{"../../compile/codegen":13,"../../compile/util":21,"../code":52}],44:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/util":23,"../code":55}],47:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const codegen_1 = require("../../compile/codegen");
@@ -5929,8 +6673,8 @@ const util_1 = require("../../compile/util");
 const code_1 = require("../code");
 const additionalItems_1 = require("./additionalItems");
 const error = {
-    message: ({ params: { len } }) => codegen_1.str `must NOT have more than ${len} items`,
-    params: ({ params: { len } }) => codegen_1._ `{limit: ${len}}`,
+    message: ({ params: { len } }) => (0, codegen_1.str) `must NOT have more than ${len} items`,
+    params: ({ params: { len } }) => (0, codegen_1._) `{limit: ${len}}`,
 };
 const def = {
     keyword: "items",
@@ -5942,17 +6686,17 @@ const def = {
         const { schema, parentSchema, it } = cxt;
         const { prefixItems } = parentSchema;
         it.items = true;
-        if (util_1.alwaysValidSchema(it, schema))
+        if ((0, util_1.alwaysValidSchema)(it, schema))
             return;
         if (prefixItems)
-            additionalItems_1.validateAdditionalItems(cxt, prefixItems);
+            (0, additionalItems_1.validateAdditionalItems)(cxt, prefixItems);
         else
-            cxt.ok(code_1.validateArray(cxt));
+            cxt.ok((0, code_1.validateArray)(cxt));
     },
 };
 exports.default = def;
 
-},{"../../compile/codegen":13,"../../compile/util":21,"../code":52,"./additionalItems":35}],45:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/util":23,"../code":55,"./additionalItems":38}],48:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const util_1 = require("../../compile/util");
@@ -5962,7 +6706,7 @@ const def = {
     trackErrors: true,
     code(cxt) {
         const { gen, schema, it } = cxt;
-        if (util_1.alwaysValidSchema(it, schema)) {
+        if ((0, util_1.alwaysValidSchema)(it, schema)) {
             cxt.fail();
             return;
         }
@@ -5979,14 +6723,14 @@ const def = {
 };
 exports.default = def;
 
-},{"../../compile/util":21}],46:[function(require,module,exports){
+},{"../../compile/util":23}],49:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const codegen_1 = require("../../compile/codegen");
 const util_1 = require("../../compile/util");
 const error = {
     message: "must match exactly one schema in oneOf",
-    params: ({ params }) => codegen_1._ `{passingSchemas: ${params.passing}}`,
+    params: ({ params }) => (0, codegen_1._) `{passingSchemas: ${params.passing}}`,
 };
 const def = {
     keyword: "oneOf",
@@ -6011,7 +6755,7 @@ const def = {
         function validateOneOf() {
             schArr.forEach((sch, i) => {
                 let schCxt;
-                if (util_1.alwaysValidSchema(it, sch)) {
+                if ((0, util_1.alwaysValidSchema)(it, sch)) {
                     gen.var(schValid, true);
                 }
                 else {
@@ -6023,9 +6767,9 @@ const def = {
                 }
                 if (i > 0) {
                     gen
-                        .if(codegen_1._ `${schValid} && ${valid}`)
+                        .if((0, codegen_1._) `${schValid} && ${valid}`)
                         .assign(valid, false)
-                        .assign(passing, codegen_1._ `[${passing}, ${i}]`)
+                        .assign(passing, (0, codegen_1._) `[${passing}, ${i}]`)
                         .else();
                 }
                 gen.if(schValid, () => {
@@ -6040,7 +6784,7 @@ const def = {
 };
 exports.default = def;
 
-},{"../../compile/codegen":13,"../../compile/util":21}],47:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/util":23}],50:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const code_1 = require("../code");
@@ -6054,8 +6798,8 @@ const def = {
     code(cxt) {
         const { gen, schema, data, parentSchema, it } = cxt;
         const { opts } = it;
-        const patterns = code_1.allSchemaProperties(schema);
-        const alwaysValidPatterns = patterns.filter((p) => util_1.alwaysValidSchema(it, schema[p]));
+        const patterns = (0, code_1.allSchemaProperties)(schema);
+        const alwaysValidPatterns = patterns.filter((p) => (0, util_1.alwaysValidSchema)(it, schema[p]));
         if (patterns.length === 0 ||
             (alwaysValidPatterns.length === patterns.length &&
                 (!it.opts.unevaluated || it.props === true))) {
@@ -6064,7 +6808,7 @@ const def = {
         const checkProperties = opts.strictSchema && !opts.allowMatchingProperties && parentSchema.properties;
         const valid = gen.name("valid");
         if (it.props !== true && !(it.props instanceof codegen_1.Name)) {
-            it.props = util_2.evaluatedPropsToName(gen, it.props);
+            it.props = (0, util_2.evaluatedPropsToName)(gen, it.props);
         }
         const { props } = it;
         validatePatternProperties();
@@ -6085,13 +6829,13 @@ const def = {
         function checkMatchingProperties(pat) {
             for (const prop in checkProperties) {
                 if (new RegExp(pat).test(prop)) {
-                    util_1.checkStrictMode(it, `property ${prop} matches pattern ${pat} (use allowMatchingProperties)`);
+                    (0, util_1.checkStrictMode)(it, `property ${prop} matches pattern ${pat} (use allowMatchingProperties)`);
                 }
             }
         }
         function validateProperties(pat) {
             gen.forIn("key", data, (key) => {
-                gen.if(codegen_1._ `${code_1.usePattern(cxt, pat)}.test(${key})`, () => {
+                gen.if((0, codegen_1._) `${(0, code_1.usePattern)(cxt, pat)}.test(${key})`, () => {
                     const alwaysValid = alwaysValidPatterns.includes(pat);
                     if (!alwaysValid) {
                         cxt.subschema({
@@ -6102,12 +6846,12 @@ const def = {
                         }, valid);
                     }
                     if (it.opts.unevaluated && props !== true) {
-                        gen.assign(codegen_1._ `${props}[${key}]`, true);
+                        gen.assign((0, codegen_1._) `${props}[${key}]`, true);
                     }
                     else if (!alwaysValid && !it.allErrors) {
                         // can short-circuit if `unevaluatedProperties` is not supported (opts.next === false)
                         // or if all properties were evaluated (props === true)
-                        gen.if(codegen_1.not(valid), () => gen.break());
+                        gen.if((0, codegen_1.not)(valid), () => gen.break());
                     }
                 });
             });
@@ -6116,7 +6860,7 @@ const def = {
 };
 exports.default = def;
 
-},{"../../compile/codegen":13,"../../compile/util":21,"../code":52}],48:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/util":23,"../code":55}],51:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const items_1 = require("./items");
@@ -6125,11 +6869,11 @@ const def = {
     type: "array",
     schemaType: ["array"],
     before: "uniqueItems",
-    code: (cxt) => items_1.validateTuple(cxt, "items"),
+    code: (cxt) => (0, items_1.validateTuple)(cxt, "items"),
 };
 exports.default = def;
 
-},{"./items":43}],49:[function(require,module,exports){
+},{"./items":46}],52:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const validate_1 = require("../../compile/validate");
@@ -6145,14 +6889,14 @@ const def = {
         if (it.opts.removeAdditional === "all" && parentSchema.additionalProperties === undefined) {
             additionalProperties_1.default.code(new validate_1.KeywordCxt(it, additionalProperties_1.default, "additionalProperties"));
         }
-        const allProps = code_1.allSchemaProperties(schema);
+        const allProps = (0, code_1.allSchemaProperties)(schema);
         for (const prop of allProps) {
             it.definedProperties.add(prop);
         }
         if (it.opts.unevaluated && allProps.length && it.props !== true) {
-            it.props = util_1.mergeEvaluated.props(gen, util_1.toHash(allProps), it.props);
+            it.props = util_1.mergeEvaluated.props(gen, (0, util_1.toHash)(allProps), it.props);
         }
-        const properties = allProps.filter((p) => !util_1.alwaysValidSchema(it, schema[p]));
+        const properties = allProps.filter((p) => !(0, util_1.alwaysValidSchema)(it, schema[p]));
         if (properties.length === 0)
             return;
         const valid = gen.name("valid");
@@ -6161,7 +6905,7 @@ const def = {
                 applyPropertySchema(prop);
             }
             else {
-                gen.if(code_1.propertyInData(gen, data, prop, it.opts.ownProperties));
+                gen.if((0, code_1.propertyInData)(gen, data, prop, it.opts.ownProperties));
                 applyPropertySchema(prop);
                 if (!it.allErrors)
                     gen.else().var(valid, true);
@@ -6184,14 +6928,14 @@ const def = {
 };
 exports.default = def;
 
-},{"../../compile/util":21,"../../compile/validate":26,"../code":52,"./additionalProperties":36}],50:[function(require,module,exports){
+},{"../../compile/util":23,"../../compile/validate":28,"../code":55,"./additionalProperties":39}],53:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const codegen_1 = require("../../compile/codegen");
 const util_1 = require("../../compile/util");
 const error = {
     message: "property name must be valid",
-    params: ({ params }) => codegen_1._ `{propertyName: ${params.propertyName}}`,
+    params: ({ params }) => (0, codegen_1._) `{propertyName: ${params.propertyName}}`,
 };
 const def = {
     keyword: "propertyNames",
@@ -6200,7 +6944,7 @@ const def = {
     error,
     code(cxt) {
         const { gen, schema, data, it } = cxt;
-        if (util_1.alwaysValidSchema(it, schema))
+        if ((0, util_1.alwaysValidSchema)(it, schema))
             return;
         const valid = gen.name("valid");
         gen.forIn("key", data, (key) => {
@@ -6212,7 +6956,7 @@ const def = {
                 propertyName: key,
                 compositeRule: true,
             }, valid);
-            gen.if(codegen_1.not(valid), () => {
+            gen.if((0, codegen_1.not)(valid), () => {
                 cxt.error(true);
                 if (!it.allErrors)
                     gen.break();
@@ -6223,7 +6967,7 @@ const def = {
 };
 exports.default = def;
 
-},{"../../compile/codegen":13,"../../compile/util":21}],51:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/util":23}],54:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const util_1 = require("../../compile/util");
@@ -6232,28 +6976,29 @@ const def = {
     schemaType: ["object", "boolean"],
     code({ keyword, parentSchema, it }) {
         if (parentSchema.if === undefined)
-            util_1.checkStrictMode(it, `"${keyword}" without "if" is ignored`);
+            (0, util_1.checkStrictMode)(it, `"${keyword}" without "if" is ignored`);
     },
 };
 exports.default = def;
 
-},{"../../compile/util":21}],52:[function(require,module,exports){
+},{"../../compile/util":23}],55:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.validateUnion = exports.validateArray = exports.usePattern = exports.callValidateCode = exports.schemaProperties = exports.allSchemaProperties = exports.noPropertyInData = exports.propertyInData = exports.isOwnProperty = exports.hasPropFunc = exports.reportMissingProp = exports.checkMissingProp = exports.checkReportMissingProp = void 0;
 const codegen_1 = require("../compile/codegen");
 const util_1 = require("../compile/util");
 const names_1 = require("../compile/names");
+const util_2 = require("../compile/util");
 function checkReportMissingProp(cxt, prop) {
     const { gen, data, it } = cxt;
     gen.if(noPropertyInData(gen, data, prop, it.opts.ownProperties), () => {
-        cxt.setParams({ missingProperty: codegen_1._ `${prop}` }, true);
+        cxt.setParams({ missingProperty: (0, codegen_1._) `${prop}` }, true);
         cxt.error();
     });
 }
 exports.checkReportMissingProp = checkReportMissingProp;
 function checkMissingProp({ gen, data, it: { opts } }, properties, missing) {
-    return codegen_1.or(...properties.map((prop) => codegen_1.and(noPropertyInData(gen, data, prop, opts.ownProperties), codegen_1._ `${missing} = ${prop}`)));
+    return (0, codegen_1.or)(...properties.map((prop) => (0, codegen_1.and)(noPropertyInData(gen, data, prop, opts.ownProperties), (0, codegen_1._) `${missing} = ${prop}`)));
 }
 exports.checkMissingProp = checkMissingProp;
 function reportMissingProp(cxt, missing) {
@@ -6265,22 +7010,22 @@ function hasPropFunc(gen) {
     return gen.scopeValue("func", {
         // eslint-disable-next-line @typescript-eslint/unbound-method
         ref: Object.prototype.hasOwnProperty,
-        code: codegen_1._ `Object.prototype.hasOwnProperty`,
+        code: (0, codegen_1._) `Object.prototype.hasOwnProperty`,
     });
 }
 exports.hasPropFunc = hasPropFunc;
 function isOwnProperty(gen, data, property) {
-    return codegen_1._ `${hasPropFunc(gen)}.call(${data}, ${property})`;
+    return (0, codegen_1._) `${hasPropFunc(gen)}.call(${data}, ${property})`;
 }
 exports.isOwnProperty = isOwnProperty;
 function propertyInData(gen, data, property, ownProperties) {
-    const cond = codegen_1._ `${data}${codegen_1.getProperty(property)} !== undefined`;
-    return ownProperties ? codegen_1._ `${cond} && ${isOwnProperty(gen, data, property)}` : cond;
+    const cond = (0, codegen_1._) `${data}${(0, codegen_1.getProperty)(property)} !== undefined`;
+    return ownProperties ? (0, codegen_1._) `${cond} && ${isOwnProperty(gen, data, property)}` : cond;
 }
 exports.propertyInData = propertyInData;
 function noPropertyInData(gen, data, property, ownProperties) {
-    const cond = codegen_1._ `${data}${codegen_1.getProperty(property)} === undefined`;
-    return ownProperties ? codegen_1.or(cond, codegen_1.not(isOwnProperty(gen, data, property))) : cond;
+    const cond = (0, codegen_1._) `${data}${(0, codegen_1.getProperty)(property)} === undefined`;
+    return ownProperties ? (0, codegen_1.or)(cond, (0, codegen_1.not)(isOwnProperty(gen, data, property))) : cond;
 }
 exports.noPropertyInData = noPropertyInData;
 function allSchemaProperties(schemaMap) {
@@ -6288,29 +7033,32 @@ function allSchemaProperties(schemaMap) {
 }
 exports.allSchemaProperties = allSchemaProperties;
 function schemaProperties(it, schemaMap) {
-    return allSchemaProperties(schemaMap).filter((p) => !util_1.alwaysValidSchema(it, schemaMap[p]));
+    return allSchemaProperties(schemaMap).filter((p) => !(0, util_1.alwaysValidSchema)(it, schemaMap[p]));
 }
 exports.schemaProperties = schemaProperties;
 function callValidateCode({ schemaCode, data, it: { gen, topSchemaRef, schemaPath, errorPath }, it }, func, context, passSchema) {
-    const dataAndSchema = passSchema ? codegen_1._ `${schemaCode}, ${data}, ${topSchemaRef}${schemaPath}` : data;
+    const dataAndSchema = passSchema ? (0, codegen_1._) `${schemaCode}, ${data}, ${topSchemaRef}${schemaPath}` : data;
     const valCxt = [
-        [names_1.default.instancePath, codegen_1.strConcat(names_1.default.instancePath, errorPath)],
+        [names_1.default.instancePath, (0, codegen_1.strConcat)(names_1.default.instancePath, errorPath)],
         [names_1.default.parentData, it.parentData],
         [names_1.default.parentDataProperty, it.parentDataProperty],
         [names_1.default.rootData, names_1.default.rootData],
     ];
     if (it.opts.dynamicRef)
         valCxt.push([names_1.default.dynamicAnchors, names_1.default.dynamicAnchors]);
-    const args = codegen_1._ `${dataAndSchema}, ${gen.object(...valCxt)}`;
-    return context !== codegen_1.nil ? codegen_1._ `${func}.call(${context}, ${args})` : codegen_1._ `${func}(${args})`;
+    const args = (0, codegen_1._) `${dataAndSchema}, ${gen.object(...valCxt)}`;
+    return context !== codegen_1.nil ? (0, codegen_1._) `${func}.call(${context}, ${args})` : (0, codegen_1._) `${func}(${args})`;
 }
 exports.callValidateCode = callValidateCode;
+const newRegExp = (0, codegen_1._) `new RegExp`;
 function usePattern({ gen, it: { opts } }, pattern) {
     const u = opts.unicodeRegExp ? "u" : "";
+    const { regExp } = opts.code;
+    const rx = regExp(pattern, u);
     return gen.scopeValue("pattern", {
-        key: pattern,
-        ref: new RegExp(pattern, u),
-        code: codegen_1._ `new RegExp(${pattern}, ${u})`,
+        key: rx.toString(),
+        ref: rx,
+        code: (0, codegen_1._) `${regExp.code === "new RegExp" ? newRegExp : (0, util_2.useFunc)(gen, regExp)}(${pattern}, ${u})`,
     });
 }
 exports.usePattern = usePattern;
@@ -6326,14 +7074,14 @@ function validateArray(cxt) {
     validateItems(() => gen.break());
     return valid;
     function validateItems(notValid) {
-        const len = gen.const("len", codegen_1._ `${data}.length`);
+        const len = gen.const("len", (0, codegen_1._) `${data}.length`);
         gen.forRange("i", 0, len, (i) => {
             cxt.subschema({
                 keyword,
                 dataProp: i,
                 dataPropType: util_1.Type.Num,
             }, valid);
-            gen.if(codegen_1.not(valid), notValid);
+            gen.if((0, codegen_1.not)(valid), notValid);
         });
     }
 }
@@ -6343,7 +7091,7 @@ function validateUnion(cxt) {
     /* istanbul ignore if */
     if (!Array.isArray(schema))
         throw new Error("ajv implementation error");
-    const alwaysValid = schema.some((sch) => util_1.alwaysValidSchema(it, sch));
+    const alwaysValid = schema.some((sch) => (0, util_1.alwaysValidSchema)(it, sch));
     if (alwaysValid && !it.opts.unevaluated)
         return;
     const valid = gen.let("valid", false);
@@ -6354,18 +7102,18 @@ function validateUnion(cxt) {
             schemaProp: i,
             compositeRule: true,
         }, schValid);
-        gen.assign(valid, codegen_1._ `${valid} || ${schValid}`);
+        gen.assign(valid, (0, codegen_1._) `${valid} || ${schValid}`);
         const merged = cxt.mergeValidEvaluated(schCxt, schValid);
         // can short-circuit if `unevaluatedProperties/Items` not supported (opts.unevaluated !== true)
         // or if all properties and items were evaluated (it.props === true && it.items === true)
         if (!merged)
-            gen.if(codegen_1.not(valid));
+            gen.if((0, codegen_1.not)(valid));
     }));
     cxt.result(valid, () => cxt.reset(), () => cxt.error(true));
 }
 exports.validateUnion = validateUnion;
 
-},{"../compile/codegen":13,"../compile/names":17,"../compile/util":21}],53:[function(require,module,exports){
+},{"../compile/codegen":15,"../compile/names":19,"../compile/util":23}],56:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const def = {
@@ -6376,7 +7124,7 @@ const def = {
 };
 exports.default = def;
 
-},{}],54:[function(require,module,exports){
+},{}],57:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const id_1 = require("./id");
@@ -6393,7 +7141,7 @@ const core = [
 ];
 exports.default = core;
 
-},{"./id":53,"./ref":55}],55:[function(require,module,exports){
+},{"./id":56,"./ref":58}],58:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.callRef = exports.getValidate = void 0;
@@ -6414,7 +7162,7 @@ const def = {
             return callRootRef();
         const schOrEnv = compile_1.resolveRef.call(self, root, baseId, $ref);
         if (schOrEnv === undefined)
-            throw new ref_error_1.default(baseId, $ref);
+            throw new ref_error_1.default(it.opts.uriResolver, baseId, $ref);
         if (schOrEnv instanceof compile_1.SchemaEnv)
             return callValidate(schOrEnv);
         return inlineRefSchema(schOrEnv);
@@ -6422,14 +7170,14 @@ const def = {
             if (env === root)
                 return callRef(cxt, validateName, env, env.$async);
             const rootName = gen.scopeValue("root", { ref: root });
-            return callRef(cxt, codegen_1._ `${rootName}.validate`, root, root.$async);
+            return callRef(cxt, (0, codegen_1._) `${rootName}.validate`, root, root.$async);
         }
         function callValidate(sch) {
             const v = getValidate(cxt, sch);
             callRef(cxt, v, sch, sch.$async);
         }
         function inlineRefSchema(sch) {
-            const schName = gen.scopeValue("schema", opts.code.source === true ? { ref: sch, code: codegen_1.stringify(sch) } : { ref: sch });
+            const schName = gen.scopeValue("schema", opts.code.source === true ? { ref: sch, code: (0, codegen_1.stringify)(sch) } : { ref: sch });
             const valid = gen.name("valid");
             const schCxt = cxt.subschema({
                 schema: sch,
@@ -6447,7 +7195,7 @@ function getValidate(cxt, sch) {
     const { gen } = cxt;
     return sch.validate
         ? gen.scopeValue("validate", { ref: sch.validate })
-        : codegen_1._ `${gen.scopeValue("wrapper", { ref: sch })}.validate`;
+        : (0, codegen_1._) `${gen.scopeValue("wrapper", { ref: sch })}.validate`;
 }
 exports.getValidate = getValidate;
 function callRef(cxt, v, sch, $async) {
@@ -6463,12 +7211,12 @@ function callRef(cxt, v, sch, $async) {
             throw new Error("async schema referenced by sync schema");
         const valid = gen.let("valid");
         gen.try(() => {
-            gen.code(codegen_1._ `await ${code_1.callValidateCode(cxt, v, passCxt)}`);
+            gen.code((0, codegen_1._) `await ${(0, code_1.callValidateCode)(cxt, v, passCxt)}`);
             addEvaluatedFrom(v); // TODO will not work with async, it has to be returned with the result
             if (!allErrors)
                 gen.assign(valid, true);
         }, (e) => {
-            gen.if(codegen_1._ `!(${e} instanceof ${it.ValidationError})`, () => gen.throw(e));
+            gen.if((0, codegen_1._) `!(${e} instanceof ${it.ValidationError})`, () => gen.throw(e));
             addErrorsFrom(e);
             if (!allErrors)
                 gen.assign(valid, false);
@@ -6476,12 +7224,12 @@ function callRef(cxt, v, sch, $async) {
         cxt.ok(valid);
     }
     function callSyncRef() {
-        cxt.result(code_1.callValidateCode(cxt, v, passCxt), () => addEvaluatedFrom(v), () => addErrorsFrom(v));
+        cxt.result((0, code_1.callValidateCode)(cxt, v, passCxt), () => addEvaluatedFrom(v), () => addErrorsFrom(v));
     }
     function addErrorsFrom(source) {
-        const errs = codegen_1._ `${source}.errors`;
-        gen.assign(names_1.default.vErrors, codegen_1._ `${names_1.default.vErrors} === null ? ${errs} : ${names_1.default.vErrors}.concat(${errs})`); // TODO tagged
-        gen.assign(names_1.default.errors, codegen_1._ `${names_1.default.vErrors}.length`);
+        const errs = (0, codegen_1._) `${source}.errors`;
+        gen.assign(names_1.default.vErrors, (0, codegen_1._) `${names_1.default.vErrors} === null ? ${errs} : ${names_1.default.vErrors}.concat(${errs})`); // TODO tagged
+        gen.assign(names_1.default.errors, (0, codegen_1._) `${names_1.default.vErrors}.length`);
     }
     function addEvaluatedFrom(source) {
         var _a;
@@ -6496,7 +7244,7 @@ function callRef(cxt, v, sch, $async) {
                 }
             }
             else {
-                const props = gen.var("props", codegen_1._ `${source}.evaluated.props`);
+                const props = gen.var("props", (0, codegen_1._) `${source}.evaluated.props`);
                 it.props = util_1.mergeEvaluated.props(gen, props, it.props, codegen_1.Name);
             }
         }
@@ -6507,7 +7255,7 @@ function callRef(cxt, v, sch, $async) {
                 }
             }
             else {
-                const items = gen.var("items", codegen_1._ `${source}.evaluated.items`);
+                const items = gen.var("items", (0, codegen_1._) `${source}.evaluated.items`);
                 it.items = util_1.mergeEvaluated.items(gen, items, it.items, codegen_1.Name);
             }
         }
@@ -6516,16 +7264,19 @@ function callRef(cxt, v, sch, $async) {
 exports.callRef = callRef;
 exports.default = def;
 
-},{"../../compile":16,"../../compile/codegen":13,"../../compile/names":17,"../../compile/ref_error":18,"../../compile/util":21,"../code":52}],56:[function(require,module,exports){
+},{"../../compile":18,"../../compile/codegen":15,"../../compile/names":19,"../../compile/ref_error":20,"../../compile/util":23,"../code":55}],59:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const codegen_1 = require("../../compile/codegen");
 const types_1 = require("../discriminator/types");
+const compile_1 = require("../../compile");
+const ref_error_1 = require("../../compile/ref_error");
+const util_1 = require("../../compile/util");
 const error = {
     message: ({ params: { discrError, tagName } }) => discrError === types_1.DiscrError.Tag
         ? `tag "${tagName}" must be string`
         : `value of tag "${tagName}" must be in oneOf`,
-    params: ({ params: { discrError, tag, tagName } }) => codegen_1._ `{error: ${discrError}, tag: ${tagName}, tagValue: ${tag}}`,
+    params: ({ params: { discrError, tag, tagName } }) => (0, codegen_1._) `{error: ${discrError}, tag: ${tagName}, tagValue: ${tag}}`,
 };
 const def = {
     keyword: "discriminator",
@@ -6546,14 +7297,14 @@ const def = {
         if (!oneOf)
             throw new Error("discriminator: requires oneOf keyword");
         const valid = gen.let("valid", false);
-        const tag = gen.const("tag", codegen_1._ `${data}${codegen_1.getProperty(tagName)}`);
-        gen.if(codegen_1._ `typeof ${tag} == "string"`, () => validateMapping(), () => cxt.error(false, { discrError: types_1.DiscrError.Tag, tag, tagName }));
+        const tag = gen.const("tag", (0, codegen_1._) `${data}${(0, codegen_1.getProperty)(tagName)}`);
+        gen.if((0, codegen_1._) `typeof ${tag} == "string"`, () => validateMapping(), () => cxt.error(false, { discrError: types_1.DiscrError.Tag, tag, tagName }));
         cxt.ok(valid);
         function validateMapping() {
             const mapping = getMapping();
             gen.if(false);
             for (const tagValue in mapping) {
-                gen.elseIf(codegen_1._ `${tag} === ${tagValue}`);
+                gen.elseIf((0, codegen_1._) `${tag} === ${tagValue}`);
                 gen.assign(valid, applyTagSchema(mapping[tagValue]));
             }
             gen.else();
@@ -6572,10 +7323,18 @@ const def = {
             const topRequired = hasRequired(parentSchema);
             let tagRequired = true;
             for (let i = 0; i < oneOf.length; i++) {
-                const sch = oneOf[i];
-                const propSch = (_a = sch.properties) === null || _a === void 0 ? void 0 : _a[tagName];
+                let sch = oneOf[i];
+                if ((sch === null || sch === void 0 ? void 0 : sch.$ref) && !(0, util_1.schemaHasRulesButRef)(sch, it.self.RULES)) {
+                    const ref = sch.$ref;
+                    sch = compile_1.resolveRef.call(it.self, it.schemaEnv.root, it.baseId, ref);
+                    if (sch instanceof compile_1.SchemaEnv)
+                        sch = sch.schema;
+                    if (sch === undefined)
+                        throw new ref_error_1.default(it.opts.uriResolver, it.baseId, ref);
+                }
+                const propSch = (_a = sch === null || sch === void 0 ? void 0 : sch.properties) === null || _a === void 0 ? void 0 : _a[tagName];
                 if (typeof propSch != "object") {
-                    throw new Error(`discriminator: oneOf schemas must have "properties/${tagName}"`);
+                    throw new Error(`discriminator: oneOf subschemas (or referenced schemas) must have "properties/${tagName}"`);
                 }
                 tagRequired = tagRequired && (topRequired || hasRequired(sch));
                 addMappings(propSch, i);
@@ -6610,7 +7369,7 @@ const def = {
 };
 exports.default = def;
 
-},{"../../compile/codegen":13,"../discriminator/types":57}],57:[function(require,module,exports){
+},{"../../compile":18,"../../compile/codegen":15,"../../compile/ref_error":20,"../../compile/util":23,"../discriminator/types":60}],60:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DiscrError = void 0;
@@ -6618,9 +7377,9 @@ var DiscrError;
 (function (DiscrError) {
     DiscrError["Tag"] = "tag";
     DiscrError["Mapping"] = "mapping";
-})(DiscrError = exports.DiscrError || (exports.DiscrError = {}));
+})(DiscrError || (exports.DiscrError = DiscrError = {}));
 
-},{}],58:[function(require,module,exports){
+},{}],61:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const core_1 = require("./core");
@@ -6631,20 +7390,20 @@ const metadata_1 = require("./metadata");
 const draft7Vocabularies = [
     core_1.default,
     validation_1.default,
-    applicator_1.default(),
+    (0, applicator_1.default)(),
     format_1.default,
     metadata_1.metadataVocabulary,
     metadata_1.contentVocabulary,
 ];
 exports.default = draft7Vocabularies;
 
-},{"./applicator":42,"./core":54,"./format":60,"./metadata":61,"./validation":64}],59:[function(require,module,exports){
+},{"./applicator":45,"./core":57,"./format":63,"./metadata":64,"./validation":67}],62:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const codegen_1 = require("../../compile/codegen");
 const error = {
-    message: ({ schemaCode }) => codegen_1.str `must match format "${schemaCode}"`,
-    params: ({ schemaCode }) => codegen_1._ `{format: ${schemaCode}}`,
+    message: ({ schemaCode }) => (0, codegen_1.str) `must match format "${schemaCode}"`,
+    params: ({ schemaCode }) => (0, codegen_1._) `{format: ${schemaCode}}`,
 };
 const def = {
     keyword: "format",
@@ -6666,23 +7425,23 @@ const def = {
                 ref: self.formats,
                 code: opts.code.formats,
             });
-            const fDef = gen.const("fDef", codegen_1._ `${fmts}[${schemaCode}]`);
+            const fDef = gen.const("fDef", (0, codegen_1._) `${fmts}[${schemaCode}]`);
             const fType = gen.let("fType");
             const format = gen.let("format");
             // TODO simplify
-            gen.if(codegen_1._ `typeof ${fDef} == "object" && !(${fDef} instanceof RegExp)`, () => gen.assign(fType, codegen_1._ `${fDef}.type || "string"`).assign(format, codegen_1._ `${fDef}.validate`), () => gen.assign(fType, codegen_1._ `"string"`).assign(format, fDef));
-            cxt.fail$data(codegen_1.or(unknownFmt(), invalidFmt()));
+            gen.if((0, codegen_1._) `typeof ${fDef} == "object" && !(${fDef} instanceof RegExp)`, () => gen.assign(fType, (0, codegen_1._) `${fDef}.type || "string"`).assign(format, (0, codegen_1._) `${fDef}.validate`), () => gen.assign(fType, (0, codegen_1._) `"string"`).assign(format, fDef));
+            cxt.fail$data((0, codegen_1.or)(unknownFmt(), invalidFmt()));
             function unknownFmt() {
                 if (opts.strictSchema === false)
                     return codegen_1.nil;
-                return codegen_1._ `${schemaCode} && !${format}`;
+                return (0, codegen_1._) `${schemaCode} && !${format}`;
             }
             function invalidFmt() {
                 const callFormat = schemaEnv.$async
-                    ? codegen_1._ `(${fDef}.async ? await ${format}(${data}) : ${format}(${data}))`
-                    : codegen_1._ `${format}(${data})`;
-                const validData = codegen_1._ `(typeof ${format} == "function" ? ${callFormat} : ${format}.test(${data}))`;
-                return codegen_1._ `${format} && ${format} !== true && ${fType} === ${ruleType} && !${validData}`;
+                    ? (0, codegen_1._) `(${fDef}.async ? await ${format}(${data}) : ${format}(${data}))`
+                    : (0, codegen_1._) `${format}(${data})`;
+                const validData = (0, codegen_1._) `(typeof ${format} == "function" ? ${callFormat} : ${format}.test(${data}))`;
+                return (0, codegen_1._) `${format} && ${format} !== true && ${fType} === ${ruleType} && !${validData}`;
             }
         }
         function validateFormat() {
@@ -6708,13 +7467,13 @@ const def = {
             }
             function getFormat(fmtDef) {
                 const code = fmtDef instanceof RegExp
-                    ? codegen_1.regexpCode(fmtDef)
+                    ? (0, codegen_1.regexpCode)(fmtDef)
                     : opts.code.formats
-                        ? codegen_1._ `${opts.code.formats}${codegen_1.getProperty(schema)}`
+                        ? (0, codegen_1._) `${opts.code.formats}${(0, codegen_1.getProperty)(schema)}`
                         : undefined;
                 const fmt = gen.scopeValue("formats", { key: schema, ref: fmtDef, code });
                 if (typeof fmtDef == "object" && !(fmtDef instanceof RegExp)) {
-                    return [fmtDef.type || "string", fmtDef.validate, codegen_1._ `${fmt}.validate`];
+                    return [fmtDef.type || "string", fmtDef.validate, (0, codegen_1._) `${fmt}.validate`];
                 }
                 return ["string", fmtDef, fmt];
             }
@@ -6722,23 +7481,23 @@ const def = {
                 if (typeof formatDef == "object" && !(formatDef instanceof RegExp) && formatDef.async) {
                     if (!schemaEnv.$async)
                         throw new Error("async format in sync schema");
-                    return codegen_1._ `await ${fmtRef}(${data})`;
+                    return (0, codegen_1._) `await ${fmtRef}(${data})`;
                 }
-                return typeof format == "function" ? codegen_1._ `${fmtRef}(${data})` : codegen_1._ `${fmtRef}.test(${data})`;
+                return typeof format == "function" ? (0, codegen_1._) `${fmtRef}(${data})` : (0, codegen_1._) `${fmtRef}.test(${data})`;
             }
         }
     },
 };
 exports.default = def;
 
-},{"../../compile/codegen":13}],60:[function(require,module,exports){
+},{"../../compile/codegen":15}],63:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const format_1 = require("./format");
 const format = [format_1.default];
 exports.default = format;
 
-},{"./format":59}],61:[function(require,module,exports){
+},{"./format":62}],64:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.contentVocabulary = exports.metadataVocabulary = void 0;
@@ -6757,7 +7516,7 @@ exports.contentVocabulary = [
     "contentSchema",
 ];
 
-},{}],62:[function(require,module,exports){
+},{}],65:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const codegen_1 = require("../../compile/codegen");
@@ -6765,7 +7524,7 @@ const util_1 = require("../../compile/util");
 const equal_1 = require("../../runtime/equal");
 const error = {
     message: "must be equal to constant",
-    params: ({ schemaCode }) => codegen_1._ `{allowedValue: ${schemaCode}}`,
+    params: ({ schemaCode }) => (0, codegen_1._) `{allowedValue: ${schemaCode}}`,
 };
 const def = {
     keyword: "const",
@@ -6774,16 +7533,16 @@ const def = {
     code(cxt) {
         const { gen, data, $data, schemaCode, schema } = cxt;
         if ($data || (schema && typeof schema == "object")) {
-            cxt.fail$data(codegen_1._ `!${util_1.useFunc(gen, equal_1.default)}(${data}, ${schemaCode})`);
+            cxt.fail$data((0, codegen_1._) `!${(0, util_1.useFunc)(gen, equal_1.default)}(${data}, ${schemaCode})`);
         }
         else {
-            cxt.fail(codegen_1._ `${schema} !== ${data}`);
+            cxt.fail((0, codegen_1._) `${schema} !== ${data}`);
         }
     },
 };
 exports.default = def;
 
-},{"../../compile/codegen":13,"../../compile/util":21,"../../runtime/equal":32}],63:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/util":23,"../../runtime/equal":34}],66:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const codegen_1 = require("../../compile/codegen");
@@ -6791,7 +7550,7 @@ const util_1 = require("../../compile/util");
 const equal_1 = require("../../runtime/equal");
 const error = {
     message: "must be equal to one of the allowed values",
-    params: ({ schemaCode }) => codegen_1._ `{allowedValues: ${schemaCode}}`,
+    params: ({ schemaCode }) => (0, codegen_1._) `{allowedValues: ${schemaCode}}`,
 };
 const def = {
     keyword: "enum",
@@ -6803,7 +7562,8 @@ const def = {
         if (!$data && schema.length === 0)
             throw new Error("enum must have non-empty array");
         const useLoop = schema.length >= it.opts.loopEnum;
-        const eql = util_1.useFunc(gen, equal_1.default);
+        let eql;
+        const getEql = () => (eql !== null && eql !== void 0 ? eql : (eql = (0, util_1.useFunc)(gen, equal_1.default)));
         let valid;
         if (useLoop || $data) {
             valid = gen.let("valid");
@@ -6814,24 +7574,24 @@ const def = {
             if (!Array.isArray(schema))
                 throw new Error("ajv implementation error");
             const vSchema = gen.const("vSchema", schemaCode);
-            valid = codegen_1.or(...schema.map((_x, i) => equalCode(vSchema, i)));
+            valid = (0, codegen_1.or)(...schema.map((_x, i) => equalCode(vSchema, i)));
         }
         cxt.pass(valid);
         function loopEnum() {
             gen.assign(valid, false);
-            gen.forOf("v", schemaCode, (v) => gen.if(codegen_1._ `${eql}(${data}, ${v})`, () => gen.assign(valid, true).break()));
+            gen.forOf("v", schemaCode, (v) => gen.if((0, codegen_1._) `${getEql()}(${data}, ${v})`, () => gen.assign(valid, true).break()));
         }
         function equalCode(vSchema, i) {
             const sch = schema[i];
             return typeof sch === "object" && sch !== null
-                ? codegen_1._ `${eql}(${data}, ${vSchema}[${i}])`
-                : codegen_1._ `${data} === ${sch}`;
+                ? (0, codegen_1._) `${getEql()}(${data}, ${vSchema}[${i}])`
+                : (0, codegen_1._) `${data} === ${sch}`;
         }
     },
 };
 exports.default = def;
 
-},{"../../compile/codegen":13,"../../compile/util":21,"../../runtime/equal":32}],64:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/util":23,"../../runtime/equal":34}],67:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const limitNumber_1 = require("./limitNumber");
@@ -6865,16 +7625,16 @@ const validation = [
 ];
 exports.default = validation;
 
-},{"./const":62,"./enum":63,"./limitItems":65,"./limitLength":66,"./limitNumber":67,"./limitProperties":68,"./multipleOf":69,"./pattern":70,"./required":71,"./uniqueItems":72}],65:[function(require,module,exports){
+},{"./const":65,"./enum":66,"./limitItems":68,"./limitLength":69,"./limitNumber":70,"./limitProperties":71,"./multipleOf":72,"./pattern":73,"./required":74,"./uniqueItems":75}],68:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const codegen_1 = require("../../compile/codegen");
 const error = {
     message({ keyword, schemaCode }) {
         const comp = keyword === "maxItems" ? "more" : "fewer";
-        return codegen_1.str `must NOT have ${comp} than ${schemaCode} items`;
+        return (0, codegen_1.str) `must NOT have ${comp} than ${schemaCode} items`;
     },
-    params: ({ schemaCode }) => codegen_1._ `{limit: ${schemaCode}}`,
+    params: ({ schemaCode }) => (0, codegen_1._) `{limit: ${schemaCode}}`,
 };
 const def = {
     keyword: ["maxItems", "minItems"],
@@ -6885,12 +7645,12 @@ const def = {
     code(cxt) {
         const { keyword, data, schemaCode } = cxt;
         const op = keyword === "maxItems" ? codegen_1.operators.GT : codegen_1.operators.LT;
-        cxt.fail$data(codegen_1._ `${data}.length ${op} ${schemaCode}`);
+        cxt.fail$data((0, codegen_1._) `${data}.length ${op} ${schemaCode}`);
     },
 };
 exports.default = def;
 
-},{"../../compile/codegen":13}],66:[function(require,module,exports){
+},{"../../compile/codegen":15}],69:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const codegen_1 = require("../../compile/codegen");
@@ -6899,9 +7659,9 @@ const ucs2length_1 = require("../../runtime/ucs2length");
 const error = {
     message({ keyword, schemaCode }) {
         const comp = keyword === "maxLength" ? "more" : "fewer";
-        return codegen_1.str `must NOT have ${comp} than ${schemaCode} characters`;
+        return (0, codegen_1.str) `must NOT have ${comp} than ${schemaCode} characters`;
     },
-    params: ({ schemaCode }) => codegen_1._ `{limit: ${schemaCode}}`,
+    params: ({ schemaCode }) => (0, codegen_1._) `{limit: ${schemaCode}}`,
 };
 const def = {
     keyword: ["maxLength", "minLength"],
@@ -6912,13 +7672,13 @@ const def = {
     code(cxt) {
         const { keyword, data, schemaCode, it } = cxt;
         const op = keyword === "maxLength" ? codegen_1.operators.GT : codegen_1.operators.LT;
-        const len = it.opts.unicode === false ? codegen_1._ `${data}.length` : codegen_1._ `${util_1.useFunc(cxt.gen, ucs2length_1.default)}(${data})`;
-        cxt.fail$data(codegen_1._ `${len} ${op} ${schemaCode}`);
+        const len = it.opts.unicode === false ? (0, codegen_1._) `${data}.length` : (0, codegen_1._) `${(0, util_1.useFunc)(cxt.gen, ucs2length_1.default)}(${data})`;
+        cxt.fail$data((0, codegen_1._) `${len} ${op} ${schemaCode}`);
     },
 };
 exports.default = def;
 
-},{"../../compile/codegen":13,"../../compile/util":21,"../../runtime/ucs2length":33}],67:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/util":23,"../../runtime/ucs2length":35}],70:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const codegen_1 = require("../../compile/codegen");
@@ -6930,8 +7690,8 @@ const KWDs = {
     exclusiveMinimum: { okStr: ">", ok: ops.GT, fail: ops.LTE },
 };
 const error = {
-    message: ({ keyword, schemaCode }) => codegen_1.str `must be ${KWDs[keyword].okStr} ${schemaCode}`,
-    params: ({ keyword, schemaCode }) => codegen_1._ `{comparison: ${KWDs[keyword].okStr}, limit: ${schemaCode}}`,
+    message: ({ keyword, schemaCode }) => (0, codegen_1.str) `must be ${KWDs[keyword].okStr} ${schemaCode}`,
+    params: ({ keyword, schemaCode }) => (0, codegen_1._) `{comparison: ${KWDs[keyword].okStr}, limit: ${schemaCode}}`,
 };
 const def = {
     keyword: Object.keys(KWDs),
@@ -6941,21 +7701,21 @@ const def = {
     error,
     code(cxt) {
         const { keyword, data, schemaCode } = cxt;
-        cxt.fail$data(codegen_1._ `${data} ${KWDs[keyword].fail} ${schemaCode} || isNaN(${data})`);
+        cxt.fail$data((0, codegen_1._) `${data} ${KWDs[keyword].fail} ${schemaCode} || isNaN(${data})`);
     },
 };
 exports.default = def;
 
-},{"../../compile/codegen":13}],68:[function(require,module,exports){
+},{"../../compile/codegen":15}],71:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const codegen_1 = require("../../compile/codegen");
 const error = {
     message({ keyword, schemaCode }) {
         const comp = keyword === "maxProperties" ? "more" : "fewer";
-        return codegen_1.str `must NOT have ${comp} than ${schemaCode} items`;
+        return (0, codegen_1.str) `must NOT have ${comp} than ${schemaCode} properties`;
     },
-    params: ({ schemaCode }) => codegen_1._ `{limit: ${schemaCode}}`,
+    params: ({ schemaCode }) => (0, codegen_1._) `{limit: ${schemaCode}}`,
 };
 const def = {
     keyword: ["maxProperties", "minProperties"],
@@ -6966,18 +7726,18 @@ const def = {
     code(cxt) {
         const { keyword, data, schemaCode } = cxt;
         const op = keyword === "maxProperties" ? codegen_1.operators.GT : codegen_1.operators.LT;
-        cxt.fail$data(codegen_1._ `Object.keys(${data}).length ${op} ${schemaCode}`);
+        cxt.fail$data((0, codegen_1._) `Object.keys(${data}).length ${op} ${schemaCode}`);
     },
 };
 exports.default = def;
 
-},{"../../compile/codegen":13}],69:[function(require,module,exports){
+},{"../../compile/codegen":15}],72:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const codegen_1 = require("../../compile/codegen");
 const error = {
-    message: ({ schemaCode }) => codegen_1.str `must be multiple of ${schemaCode}`,
-    params: ({ schemaCode }) => codegen_1._ `{multipleOf: ${schemaCode}}`,
+    message: ({ schemaCode }) => (0, codegen_1.str) `must be multiple of ${schemaCode}`,
+    params: ({ schemaCode }) => (0, codegen_1._) `{multipleOf: ${schemaCode}}`,
 };
 const def = {
     keyword: "multipleOf",
@@ -6991,21 +7751,22 @@ const def = {
         const prec = it.opts.multipleOfPrecision;
         const res = gen.let("res");
         const invalid = prec
-            ? codegen_1._ `Math.abs(Math.round(${res}) - ${res}) > 1e-${prec}`
-            : codegen_1._ `${res} !== parseInt(${res})`;
-        cxt.fail$data(codegen_1._ `(${schemaCode} === 0 || (${res} = ${data}/${schemaCode}, ${invalid}))`);
+            ? (0, codegen_1._) `Math.abs(Math.round(${res}) - ${res}) > 1e-${prec}`
+            : (0, codegen_1._) `${res} !== parseInt(${res})`;
+        cxt.fail$data((0, codegen_1._) `(${schemaCode} === 0 || (${res} = ${data}/${schemaCode}, ${invalid}))`);
     },
 };
 exports.default = def;
 
-},{"../../compile/codegen":13}],70:[function(require,module,exports){
+},{"../../compile/codegen":15}],73:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const code_1 = require("../code");
+const util_1 = require("../../compile/util");
 const codegen_1 = require("../../compile/codegen");
 const error = {
-    message: ({ schemaCode }) => codegen_1.str `must match pattern "${schemaCode}"`,
-    params: ({ schemaCode }) => codegen_1._ `{pattern: ${schemaCode}}`,
+    message: ({ schemaCode }) => (0, codegen_1.str) `must match pattern "${schemaCode}"`,
+    params: ({ schemaCode }) => (0, codegen_1._) `{pattern: ${schemaCode}}`,
 };
 const def = {
     keyword: "pattern",
@@ -7014,24 +7775,32 @@ const def = {
     $data: true,
     error,
     code(cxt) {
-        const { data, $data, schema, schemaCode, it } = cxt;
-        // TODO regexp should be wrapped in try/catchs
+        const { gen, data, $data, schema, schemaCode, it } = cxt;
         const u = it.opts.unicodeRegExp ? "u" : "";
-        const regExp = $data ? codegen_1._ `(new RegExp(${schemaCode}, ${u}))` : code_1.usePattern(cxt, schema);
-        cxt.fail$data(codegen_1._ `!${regExp}.test(${data})`);
+        if ($data) {
+            const { regExp } = it.opts.code;
+            const regExpCode = regExp.code === "new RegExp" ? (0, codegen_1._) `new RegExp` : (0, util_1.useFunc)(gen, regExp);
+            const valid = gen.let("valid");
+            gen.try(() => gen.assign(valid, (0, codegen_1._) `${regExpCode}(${schemaCode}, ${u}).test(${data})`), () => gen.assign(valid, false));
+            cxt.fail$data((0, codegen_1._) `!${valid}`);
+        }
+        else {
+            const regExp = (0, code_1.usePattern)(cxt, schema);
+            cxt.fail$data((0, codegen_1._) `!${regExp}.test(${data})`);
+        }
     },
 };
 exports.default = def;
 
-},{"../../compile/codegen":13,"../code":52}],71:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/util":23,"../code":55}],74:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const code_1 = require("../code");
 const codegen_1 = require("../../compile/codegen");
 const util_1 = require("../../compile/util");
 const error = {
-    message: ({ params: { missingProperty } }) => codegen_1.str `must have required property '${missingProperty}'`,
-    params: ({ params: { missingProperty } }) => codegen_1._ `{missingProperty: ${missingProperty}}`,
+    message: ({ params: { missingProperty } }) => (0, codegen_1.str) `must have required property '${missingProperty}'`,
+    params: ({ params: { missingProperty } }) => (0, codegen_1._) `{missingProperty: ${missingProperty}}`,
 };
 const def = {
     keyword: "required",
@@ -7056,7 +7825,7 @@ const def = {
                 if ((props === null || props === void 0 ? void 0 : props[requiredKey]) === undefined && !definedProperties.has(requiredKey)) {
                     const schemaPath = it.schemaEnv.baseId + it.errSchemaPath;
                     const msg = `required property "${requiredKey}" is not defined at "${schemaPath}" (strictRequired)`;
-                    util_1.checkStrictMode(it, msg, it.opts.strictRequired);
+                    (0, util_1.checkStrictMode)(it, msg, it.opts.strictRequired);
                 }
             }
         }
@@ -7066,7 +7835,7 @@ const def = {
             }
             else {
                 for (const prop of schema) {
-                    code_1.checkReportMissingProp(cxt, prop);
+                    (0, code_1.checkReportMissingProp)(cxt, prop);
                 }
             }
         }
@@ -7078,22 +7847,22 @@ const def = {
                 cxt.ok(valid);
             }
             else {
-                gen.if(code_1.checkMissingProp(cxt, schema, missing));
-                code_1.reportMissingProp(cxt, missing);
+                gen.if((0, code_1.checkMissingProp)(cxt, schema, missing));
+                (0, code_1.reportMissingProp)(cxt, missing);
                 gen.else();
             }
         }
         function loopAllRequired() {
             gen.forOf("prop", schemaCode, (prop) => {
                 cxt.setParams({ missingProperty: prop });
-                gen.if(code_1.noPropertyInData(gen, data, prop, opts.ownProperties), () => cxt.error());
+                gen.if((0, code_1.noPropertyInData)(gen, data, prop, opts.ownProperties), () => cxt.error());
             });
         }
         function loopUntilMissing(missing, valid) {
             cxt.setParams({ missingProperty: missing });
             gen.forOf(missing, schemaCode, () => {
-                gen.assign(valid, code_1.propertyInData(gen, data, missing, opts.ownProperties));
-                gen.if(codegen_1.not(valid), () => {
+                gen.assign(valid, (0, code_1.propertyInData)(gen, data, missing, opts.ownProperties));
+                gen.if((0, codegen_1.not)(valid), () => {
                     cxt.error();
                     gen.break();
                 });
@@ -7103,7 +7872,7 @@ const def = {
 };
 exports.default = def;
 
-},{"../../compile/codegen":13,"../../compile/util":21,"../code":52}],72:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/util":23,"../code":55}],75:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const dataType_1 = require("../../compile/validate/dataType");
@@ -7111,8 +7880,8 @@ const codegen_1 = require("../../compile/codegen");
 const util_1 = require("../../compile/util");
 const equal_1 = require("../../runtime/equal");
 const error = {
-    message: ({ params: { i, j } }) => codegen_1.str `must NOT have duplicate items (items ## ${j} and ${i} are identical)`,
-    params: ({ params: { i, j } }) => codegen_1._ `{i: ${i}, j: ${j}}`,
+    message: ({ params: { i, j } }) => (0, codegen_1.str) `must NOT have duplicate items (items ## ${j} and ${i} are identical)`,
+    params: ({ params: { i, j } }) => (0, codegen_1._) `{i: ${i}, j: ${j}}`,
 };
 const def = {
     keyword: "uniqueItems",
@@ -7125,41 +7894,41 @@ const def = {
         if (!$data && !schema)
             return;
         const valid = gen.let("valid");
-        const itemTypes = parentSchema.items ? dataType_1.getSchemaTypes(parentSchema.items) : [];
-        cxt.block$data(valid, validateUniqueItems, codegen_1._ `${schemaCode} === false`);
+        const itemTypes = parentSchema.items ? (0, dataType_1.getSchemaTypes)(parentSchema.items) : [];
+        cxt.block$data(valid, validateUniqueItems, (0, codegen_1._) `${schemaCode} === false`);
         cxt.ok(valid);
         function validateUniqueItems() {
-            const i = gen.let("i", codegen_1._ `${data}.length`);
+            const i = gen.let("i", (0, codegen_1._) `${data}.length`);
             const j = gen.let("j");
             cxt.setParams({ i, j });
             gen.assign(valid, true);
-            gen.if(codegen_1._ `${i} > 1`, () => (canOptimize() ? loopN : loopN2)(i, j));
+            gen.if((0, codegen_1._) `${i} > 1`, () => (canOptimize() ? loopN : loopN2)(i, j));
         }
         function canOptimize() {
             return itemTypes.length > 0 && !itemTypes.some((t) => t === "object" || t === "array");
         }
         function loopN(i, j) {
             const item = gen.name("item");
-            const wrongType = dataType_1.checkDataTypes(itemTypes, item, it.opts.strictNumbers, dataType_1.DataType.Wrong);
-            const indices = gen.const("indices", codegen_1._ `{}`);
-            gen.for(codegen_1._ `;${i}--;`, () => {
-                gen.let(item, codegen_1._ `${data}[${i}]`);
-                gen.if(wrongType, codegen_1._ `continue`);
+            const wrongType = (0, dataType_1.checkDataTypes)(itemTypes, item, it.opts.strictNumbers, dataType_1.DataType.Wrong);
+            const indices = gen.const("indices", (0, codegen_1._) `{}`);
+            gen.for((0, codegen_1._) `;${i}--;`, () => {
+                gen.let(item, (0, codegen_1._) `${data}[${i}]`);
+                gen.if(wrongType, (0, codegen_1._) `continue`);
                 if (itemTypes.length > 1)
-                    gen.if(codegen_1._ `typeof ${item} == "string"`, codegen_1._ `${item} += "_"`);
+                    gen.if((0, codegen_1._) `typeof ${item} == "string"`, (0, codegen_1._) `${item} += "_"`);
                 gen
-                    .if(codegen_1._ `typeof ${indices}[${item}] == "number"`, () => {
-                    gen.assign(j, codegen_1._ `${indices}[${item}]`);
+                    .if((0, codegen_1._) `typeof ${indices}[${item}] == "number"`, () => {
+                    gen.assign(j, (0, codegen_1._) `${indices}[${item}]`);
                     cxt.error();
                     gen.assign(valid, false).break();
                 })
-                    .code(codegen_1._ `${indices}[${item}] = ${i}`);
+                    .code((0, codegen_1._) `${indices}[${item}] = ${i}`);
             });
         }
         function loopN2(i, j) {
-            const eql = util_1.useFunc(gen, equal_1.default);
+            const eql = (0, util_1.useFunc)(gen, equal_1.default);
             const outer = gen.name("outer");
-            gen.label(outer).for(codegen_1._ `;${i}--;`, () => gen.for(codegen_1._ `${j} = ${i}; ${j}--;`, () => gen.if(codegen_1._ `${eql}(${data}[${i}], ${data}[${j}])`, () => {
+            gen.label(outer).for((0, codegen_1._) `;${i}--;`, () => gen.for((0, codegen_1._) `${j} = ${i}; ${j}--;`, () => gen.if((0, codegen_1._) `${eql}(${data}[${i}], ${data}[${j}])`, () => {
                 cxt.error();
                 gen.assign(valid, false).break(outer);
             })));
@@ -7168,7 +7937,7 @@ const def = {
 };
 exports.default = def;
 
-},{"../../compile/codegen":13,"../../compile/util":21,"../../compile/validate/dataType":24,"../../runtime/equal":32}],73:[function(require,module,exports){
+},{"../../compile/codegen":15,"../../compile/util":23,"../../compile/validate/dataType":26,"../../runtime/equal":34}],76:[function(require,module,exports){
 'use strict'
 
 exports.byteLength = byteLength
@@ -7320,9 +8089,9 @@ function fromByteArray (uint8) {
   return parts.join('')
 }
 
-},{}],74:[function(require,module,exports){
+},{}],77:[function(require,module,exports){
 
-},{}],75:[function(require,module,exports){
+},{}],78:[function(require,module,exports){
 (function (Buffer){(function (){
 /*!
  * The buffer module from node.js, for the browser.
@@ -9103,7 +9872,7 @@ function numberIsNaN (obj) {
 }
 
 }).call(this)}).call(this,require("buffer").Buffer)
-},{"base64-js":73,"buffer":75,"ieee754":79}],76:[function(require,module,exports){
+},{"base64-js":76,"buffer":78,"ieee754":85}],79:[function(require,module,exports){
 (function (Buffer){(function (){
 var clone = (function() {
 'use strict';
@@ -9364,7 +10133,7 @@ if (typeof module === 'object' && module.exports) {
 }
 
 }).call(this)}).call(this,require("buffer").Buffer)
-},{"buffer":75}],77:[function(require,module,exports){
+},{"buffer":78}],80:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -9863,7 +10632,7 @@ function eventTargetAgnosticAddListener(emitter, name, listener, flags) {
   }
 }
 
-},{}],78:[function(require,module,exports){
+},{}],81:[function(require,module,exports){
 'use strict';
 
 // do not edit .js files directly - edit src/index.jst
@@ -9911,7 +10680,1129 @@ module.exports = function equal(a, b) {
   return a!==a && b!==b;
 };
 
-},{}],79:[function(require,module,exports){
+},{}],82:[function(require,module,exports){
+'use strict'
+
+const { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require('./lib/utils')
+const { SCHEMES, getSchemeHandler } = require('./lib/schemes')
+
+/**
+ * @template {import('./types/index').URIComponent|string} T
+ * @param {T} uri
+ * @param {import('./types/index').Options} [options]
+ * @returns {T}
+ */
+function normalize (uri, options) {
+  if (typeof uri === 'string') {
+    uri = /** @type {T} */ (normalizeString(uri, options))
+  } else if (typeof uri === 'object') {
+    uri = /** @type {T} */ (parse(serialize(uri, options), options))
+  }
+  return uri
+}
+
+/**
+ * @param {string} baseURI
+ * @param {string} relativeURI
+ * @param {import('./types/index').Options} [options]
+ * @returns {string}
+ */
+function resolve (baseURI, relativeURI, options) {
+  const schemelessOptions = options ? Object.assign({ scheme: 'null' }, options) : { scheme: 'null' }
+  const resolved = resolveComponent(parse(baseURI, schemelessOptions), parse(relativeURI, schemelessOptions), schemelessOptions, true)
+  schemelessOptions.skipEscape = true
+  return serialize(resolved, schemelessOptions)
+}
+
+/**
+ * @param {import ('./types/index').URIComponent} base
+ * @param {import ('./types/index').URIComponent} relative
+ * @param {import('./types/index').Options} [options]
+ * @param {boolean} [skipNormalization=false]
+ * @returns {import ('./types/index').URIComponent}
+ */
+function resolveComponent (base, relative, options, skipNormalization) {
+  /** @type {import('./types/index').URIComponent} */
+  const target = {}
+  if (!skipNormalization) {
+    base = parse(serialize(base, options), options) // normalize base component
+    relative = parse(serialize(relative, options), options) // normalize relative component
+  }
+  options = options || {}
+
+  if (!options.tolerant && relative.scheme) {
+    target.scheme = relative.scheme
+    // target.authority = relative.authority;
+    target.userinfo = relative.userinfo
+    target.host = relative.host
+    target.port = relative.port
+    target.path = removeDotSegments(relative.path || '')
+    target.query = relative.query
+  } else {
+    if (relative.userinfo !== undefined || relative.host !== undefined || relative.port !== undefined) {
+      // target.authority = relative.authority;
+      target.userinfo = relative.userinfo
+      target.host = relative.host
+      target.port = relative.port
+      target.path = removeDotSegments(relative.path || '')
+      target.query = relative.query
+    } else {
+      if (!relative.path) {
+        target.path = base.path
+        if (relative.query !== undefined) {
+          target.query = relative.query
+        } else {
+          target.query = base.query
+        }
+      } else {
+        if (relative.path[0] === '/') {
+          target.path = removeDotSegments(relative.path)
+        } else {
+          if ((base.userinfo !== undefined || base.host !== undefined || base.port !== undefined) && !base.path) {
+            target.path = '/' + relative.path
+          } else if (!base.path) {
+            target.path = relative.path
+          } else {
+            target.path = base.path.slice(0, base.path.lastIndexOf('/') + 1) + relative.path
+          }
+          target.path = removeDotSegments(target.path)
+        }
+        target.query = relative.query
+      }
+      // target.authority = base.authority;
+      target.userinfo = base.userinfo
+      target.host = base.host
+      target.port = base.port
+    }
+    target.scheme = base.scheme
+  }
+
+  target.fragment = relative.fragment
+
+  return target
+}
+
+/**
+ * @param {import ('./types/index').URIComponent|string} uriA
+ * @param {import ('./types/index').URIComponent|string} uriB
+ * @param {import ('./types/index').Options} options
+ * @returns {boolean}
+ */
+function equal (uriA, uriB, options) {
+  const normalizedA = normalizeComparableURI(uriA, options)
+  const normalizedB = normalizeComparableURI(uriB, options)
+
+  return normalizedA !== undefined && normalizedB !== undefined && normalizedA.toLowerCase() === normalizedB.toLowerCase()
+}
+
+/**
+ * @param {Readonly<import('./types/index').URIComponent>} cmpts
+ * @param {import('./types/index').Options} [opts]
+ * @returns {string}
+ */
+function serialize (cmpts, opts) {
+  const component = {
+    host: cmpts.host,
+    scheme: cmpts.scheme,
+    userinfo: cmpts.userinfo,
+    port: cmpts.port,
+    path: cmpts.path,
+    query: cmpts.query,
+    nid: cmpts.nid,
+    nss: cmpts.nss,
+    uuid: cmpts.uuid,
+    fragment: cmpts.fragment,
+    reference: cmpts.reference,
+    resourceName: cmpts.resourceName,
+    secure: cmpts.secure,
+    error: ''
+  }
+  const options = Object.assign({}, opts)
+  const uriTokens = []
+
+  // find scheme handler
+  const schemeHandler = getSchemeHandler(options.scheme || component.scheme)
+
+  // perform scheme specific serialization
+  if (schemeHandler && schemeHandler.serialize) schemeHandler.serialize(component, options)
+
+  if (component.path !== undefined) {
+    if (!options.skipEscape) {
+      component.path = escapePreservingEscapes(component.path)
+
+      if (component.scheme !== undefined) {
+        component.path = component.path.split('%3A').join(':')
+      }
+    } else {
+      component.path = normalizePercentEncoding(component.path)
+    }
+  }
+
+  if (options.reference !== 'suffix' && component.scheme) {
+    uriTokens.push(component.scheme, ':')
+  }
+
+  const authority = recomposeAuthority(component)
+  if (authority !== undefined) {
+    if (options.reference !== 'suffix') {
+      uriTokens.push('//')
+    }
+
+    uriTokens.push(authority)
+
+    if (component.path && component.path[0] !== '/') {
+      uriTokens.push('/')
+    }
+  }
+  if (component.path !== undefined) {
+    let s = component.path
+
+    if (!options.absolutePath && (!schemeHandler || !schemeHandler.absolutePath)) {
+      s = removeDotSegments(s)
+    }
+
+    if (
+      authority === undefined &&
+      s[0] === '/' &&
+      s[1] === '/'
+    ) {
+      // don't allow the path to start with "//"
+      s = '/%2F' + s.slice(2)
+    }
+
+    uriTokens.push(s)
+  }
+
+  if (component.query !== undefined) {
+    uriTokens.push('?', component.query)
+  }
+
+  if (component.fragment !== undefined) {
+    uriTokens.push('#', component.fragment)
+  }
+  return uriTokens.join('')
+}
+
+const URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u
+
+/**
+ * @param {import('./types/index').URIComponent} parsed
+ * @param {RegExpMatchArray} matches
+ * @returns {string|undefined}
+ */
+function getParseError (parsed, matches) {
+  if (matches[2] !== undefined && parsed.path && parsed.path[0] !== '/') {
+    return 'URI path must start with "/" when authority is present.'
+  }
+
+  if (typeof parsed.port === 'number' && (parsed.port < 0 || parsed.port > 65535)) {
+    return 'URI port is malformed.'
+  }
+
+  return undefined
+}
+
+/**
+ * @param {string} uri
+ * @param {import('./types/index').Options} [opts]
+ * @returns {{ parsed: import('./types/index').URIComponent, malformedAuthorityOrPort: boolean }}
+ */
+function parseWithStatus (uri, opts) {
+  const options = Object.assign({}, opts)
+  /** @type {import('./types/index').URIComponent} */
+  const parsed = {
+    scheme: undefined,
+    userinfo: undefined,
+    host: '',
+    port: undefined,
+    path: '',
+    query: undefined,
+    fragment: undefined
+  }
+
+  let malformedAuthorityOrPort = false
+
+  let isIP = false
+  if (options.reference === 'suffix') {
+    if (options.scheme) {
+      uri = options.scheme + ':' + uri
+    } else {
+      uri = '//' + uri
+    }
+  }
+
+  const matches = uri.match(URI_PARSE)
+
+  if (matches) {
+    // store each component
+    parsed.scheme = matches[1]
+    parsed.userinfo = matches[3]
+    parsed.host = matches[4]
+    parsed.port = parseInt(matches[5], 10)
+    parsed.path = matches[6] || ''
+    parsed.query = matches[7]
+    parsed.fragment = matches[8]
+
+    // fix port number
+    if (isNaN(parsed.port)) {
+      parsed.port = matches[5]
+    }
+
+    const parseError = getParseError(parsed, matches)
+    if (parseError !== undefined) {
+      parsed.error = parsed.error || parseError
+      malformedAuthorityOrPort = true
+    }
+
+    if (parsed.host) {
+      const ipv4result = isIPv4(parsed.host)
+      if (ipv4result === false) {
+        const ipv6result = normalizeIPv6(parsed.host)
+        parsed.host = ipv6result.host.toLowerCase()
+        isIP = ipv6result.isIPV6
+      } else {
+        isIP = true
+      }
+    }
+    if (parsed.scheme === undefined && parsed.userinfo === undefined && parsed.host === undefined && parsed.port === undefined && parsed.query === undefined && !parsed.path) {
+      parsed.reference = 'same-document'
+    } else if (parsed.scheme === undefined) {
+      parsed.reference = 'relative'
+    } else if (parsed.fragment === undefined) {
+      parsed.reference = 'absolute'
+    } else {
+      parsed.reference = 'uri'
+    }
+
+    // check for reference errors
+    if (options.reference && options.reference !== 'suffix' && options.reference !== parsed.reference) {
+      parsed.error = parsed.error || 'URI is not a ' + options.reference + ' reference.'
+    }
+
+    // find scheme handler
+    const schemeHandler = getSchemeHandler(options.scheme || parsed.scheme)
+
+    // check if scheme can't handle IRIs
+    if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport)) {
+      // if host component is a domain name
+      if (parsed.host && (options.domainHost || (schemeHandler && schemeHandler.domainHost)) && isIP === false && nonSimpleDomain(parsed.host)) {
+        // convert Unicode IDN -> ASCII IDN
+        try {
+          parsed.host = URL.domainToASCII(parsed.host.toLowerCase())
+        } catch (e) {
+          parsed.error = parsed.error || "Host's domain name can not be converted to ASCII: " + e
+        }
+      }
+      // convert IRI -> URI
+    }
+
+    if (!schemeHandler || (schemeHandler && !schemeHandler.skipNormalize)) {
+      if (uri.indexOf('%') !== -1) {
+        if (parsed.scheme !== undefined) {
+          parsed.scheme = unescape(parsed.scheme)
+        }
+        if (parsed.host !== undefined) {
+          parsed.host = reescapeHostDelimiters(unescape(parsed.host), isIP)
+        }
+      }
+      if (parsed.path) {
+        parsed.path = normalizePathEncoding(parsed.path)
+      }
+      if (parsed.fragment) {
+        try {
+          parsed.fragment = encodeURI(decodeURIComponent(parsed.fragment))
+        } catch {
+          parsed.error = parsed.error || 'URI malformed'
+        }
+      }
+    }
+
+    // perform scheme specific parsing
+    if (schemeHandler && schemeHandler.parse) {
+      schemeHandler.parse(parsed, options)
+    }
+  } else {
+    parsed.error = parsed.error || 'URI can not be parsed.'
+  }
+  return { parsed, malformedAuthorityOrPort }
+}
+
+/**
+ * @param {string} uri
+ * @param {import('./types/index').Options} [opts]
+ * @returns
+ */
+function parse (uri, opts) {
+  return parseWithStatus(uri, opts).parsed
+}
+
+/**
+ * @param {string} uri
+ * @param {import('./types/index').Options} [opts]
+ * @returns {string}
+ */
+function normalizeString (uri, opts) {
+  return normalizeStringWithStatus(uri, opts).normalized
+}
+
+/**
+ * @param {string} uri
+ * @param {import('./types/index').Options} [opts]
+ * @returns {{ normalized: string, malformedAuthorityOrPort: boolean }}
+ */
+function normalizeStringWithStatus (uri, opts) {
+  const { parsed, malformedAuthorityOrPort } = parseWithStatus(uri, opts)
+  return {
+    normalized: malformedAuthorityOrPort ? uri : serialize(parsed, opts),
+    malformedAuthorityOrPort
+  }
+}
+
+/**
+ * @param {import ('./types/index').URIComponent|string} uri
+ * @param {import('./types/index').Options} [opts]
+ * @returns {string|undefined}
+ */
+function normalizeComparableURI (uri, opts) {
+  if (typeof uri === 'string') {
+    const { normalized, malformedAuthorityOrPort } = normalizeStringWithStatus(uri, opts)
+    return malformedAuthorityOrPort ? undefined : normalized
+  }
+
+  if (typeof uri === 'object') {
+    return serialize(uri, opts)
+  }
+}
+
+const fastUri = {
+  SCHEMES,
+  normalize,
+  resolve,
+  resolveComponent,
+  equal,
+  serialize,
+  parse
+}
+
+module.exports = fastUri
+module.exports.default = fastUri
+module.exports.fastUri = fastUri
+
+},{"./lib/schemes":83,"./lib/utils":84}],83:[function(require,module,exports){
+'use strict'
+
+const { isUUID } = require('./utils')
+const URN_REG = /([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-.:;=@]|%[\da-f]{2})+)/iu
+
+const supportedSchemeNames = /** @type {const} */ (['http', 'https', 'ws',
+  'wss', 'urn', 'urn:uuid'])
+
+/** @typedef {supportedSchemeNames[number]} SchemeName */
+
+/**
+ * @param {string} name
+ * @returns {name is SchemeName}
+ */
+function isValidSchemeName (name) {
+  return supportedSchemeNames.indexOf(/** @type {*} */ (name)) !== -1
+}
+
+/**
+ * @callback SchemeFn
+ * @param {import('../types/index').URIComponent} component
+ * @param {import('../types/index').Options} options
+ * @returns {import('../types/index').URIComponent}
+ */
+
+/**
+ * @typedef {Object} SchemeHandler
+ * @property {SchemeName} scheme - The scheme name.
+ * @property {boolean} [domainHost] - Indicates if the scheme supports domain hosts.
+ * @property {SchemeFn} parse - Function to parse the URI component for this scheme.
+ * @property {SchemeFn} serialize - Function to serialize the URI component for this scheme.
+ * @property {boolean} [skipNormalize] - Indicates if normalization should be skipped for this scheme.
+ * @property {boolean} [absolutePath] - Indicates if the scheme uses absolute paths.
+ * @property {boolean} [unicodeSupport] - Indicates if the scheme supports Unicode.
+ */
+
+/**
+ * @param {import('../types/index').URIComponent} wsComponent
+ * @returns {boolean}
+ */
+function wsIsSecure (wsComponent) {
+  if (wsComponent.secure === true) {
+    return true
+  } else if (wsComponent.secure === false) {
+    return false
+  } else if (wsComponent.scheme) {
+    return (
+      wsComponent.scheme.length === 3 &&
+      (wsComponent.scheme[0] === 'w' || wsComponent.scheme[0] === 'W') &&
+      (wsComponent.scheme[1] === 's' || wsComponent.scheme[1] === 'S') &&
+      (wsComponent.scheme[2] === 's' || wsComponent.scheme[2] === 'S')
+    )
+  } else {
+    return false
+  }
+}
+
+/** @type {SchemeFn} */
+function httpParse (component) {
+  if (!component.host) {
+    component.error = component.error || 'HTTP URIs must have a host.'
+  }
+
+  return component
+}
+
+/** @type {SchemeFn} */
+function httpSerialize (component) {
+  const secure = String(component.scheme).toLowerCase() === 'https'
+
+  // normalize the default port
+  if (component.port === (secure ? 443 : 80) || component.port === '') {
+    component.port = undefined
+  }
+
+  // normalize the empty path
+  if (!component.path) {
+    component.path = '/'
+  }
+
+  // NOTE: We do not parse query strings for HTTP URIs
+  // as WWW Form Url Encoded query strings are part of the HTML4+ spec,
+  // and not the HTTP spec.
+
+  return component
+}
+
+/** @type {SchemeFn} */
+function wsParse (wsComponent) {
+// indicate if the secure flag is set
+  wsComponent.secure = wsIsSecure(wsComponent)
+
+  // construct resouce name
+  wsComponent.resourceName = (wsComponent.path || '/') + (wsComponent.query ? '?' + wsComponent.query : '')
+  wsComponent.path = undefined
+  wsComponent.query = undefined
+
+  return wsComponent
+}
+
+/** @type {SchemeFn} */
+function wsSerialize (wsComponent) {
+// normalize the default port
+  if (wsComponent.port === (wsIsSecure(wsComponent) ? 443 : 80) || wsComponent.port === '') {
+    wsComponent.port = undefined
+  }
+
+  // ensure scheme matches secure flag
+  if (typeof wsComponent.secure === 'boolean') {
+    wsComponent.scheme = (wsComponent.secure ? 'wss' : 'ws')
+    wsComponent.secure = undefined
+  }
+
+  // reconstruct path from resource name
+  if (wsComponent.resourceName) {
+    const [path, query] = wsComponent.resourceName.split('?')
+    wsComponent.path = (path && path !== '/' ? path : undefined)
+    wsComponent.query = query
+    wsComponent.resourceName = undefined
+  }
+
+  // forbid fragment component
+  wsComponent.fragment = undefined
+
+  return wsComponent
+}
+
+/** @type {SchemeFn} */
+function urnParse (urnComponent, options) {
+  if (!urnComponent.path) {
+    urnComponent.error = 'URN can not be parsed'
+    return urnComponent
+  }
+  const matches = urnComponent.path.match(URN_REG)
+  if (matches) {
+    const scheme = options.scheme || urnComponent.scheme || 'urn'
+    urnComponent.nid = matches[1].toLowerCase()
+    urnComponent.nss = matches[2]
+    const urnScheme = `${scheme}:${options.nid || urnComponent.nid}`
+    const schemeHandler = getSchemeHandler(urnScheme)
+    urnComponent.path = undefined
+
+    if (schemeHandler) {
+      urnComponent = schemeHandler.parse(urnComponent, options)
+    }
+  } else {
+    urnComponent.error = urnComponent.error || 'URN can not be parsed.'
+  }
+
+  return urnComponent
+}
+
+/** @type {SchemeFn} */
+function urnSerialize (urnComponent, options) {
+  if (urnComponent.nid === undefined) {
+    throw new Error('URN without nid cannot be serialized')
+  }
+  const scheme = options.scheme || urnComponent.scheme || 'urn'
+  const nid = urnComponent.nid.toLowerCase()
+  const urnScheme = `${scheme}:${options.nid || nid}`
+  const schemeHandler = getSchemeHandler(urnScheme)
+
+  if (schemeHandler) {
+    urnComponent = schemeHandler.serialize(urnComponent, options)
+  }
+
+  const uriComponent = urnComponent
+  const nss = urnComponent.nss
+  uriComponent.path = `${nid || options.nid}:${nss}`
+
+  options.skipEscape = true
+  return uriComponent
+}
+
+/** @type {SchemeFn} */
+function urnuuidParse (urnComponent, options) {
+  const uuidComponent = urnComponent
+  uuidComponent.uuid = uuidComponent.nss
+  uuidComponent.nss = undefined
+
+  if (!options.tolerant && (!uuidComponent.uuid || !isUUID(uuidComponent.uuid))) {
+    uuidComponent.error = uuidComponent.error || 'UUID is not valid.'
+  }
+
+  return uuidComponent
+}
+
+/** @type {SchemeFn} */
+function urnuuidSerialize (uuidComponent) {
+  const urnComponent = uuidComponent
+  // normalize UUID
+  urnComponent.nss = (uuidComponent.uuid || '').toLowerCase()
+  return urnComponent
+}
+
+const http = /** @type {SchemeHandler} */ ({
+  scheme: 'http',
+  domainHost: true,
+  parse: httpParse,
+  serialize: httpSerialize
+})
+
+const https = /** @type {SchemeHandler} */ ({
+  scheme: 'https',
+  domainHost: http.domainHost,
+  parse: httpParse,
+  serialize: httpSerialize
+})
+
+const ws = /** @type {SchemeHandler} */ ({
+  scheme: 'ws',
+  domainHost: true,
+  parse: wsParse,
+  serialize: wsSerialize
+})
+
+const wss = /** @type {SchemeHandler} */ ({
+  scheme: 'wss',
+  domainHost: ws.domainHost,
+  parse: ws.parse,
+  serialize: ws.serialize
+})
+
+const urn = /** @type {SchemeHandler} */ ({
+  scheme: 'urn',
+  parse: urnParse,
+  serialize: urnSerialize,
+  skipNormalize: true
+})
+
+const urnuuid = /** @type {SchemeHandler} */ ({
+  scheme: 'urn:uuid',
+  parse: urnuuidParse,
+  serialize: urnuuidSerialize,
+  skipNormalize: true
+})
+
+const SCHEMES = /** @type {Record<SchemeName, SchemeHandler>} */ ({
+  http,
+  https,
+  ws,
+  wss,
+  urn,
+  'urn:uuid': urnuuid
+})
+
+Object.setPrototypeOf(SCHEMES, null)
+
+/**
+ * @param {string|undefined} scheme
+ * @returns {SchemeHandler|undefined}
+ */
+function getSchemeHandler (scheme) {
+  return (
+    scheme && (
+      SCHEMES[/** @type {SchemeName} */ (scheme)] ||
+      SCHEMES[/** @type {SchemeName} */(scheme.toLowerCase())])
+  ) ||
+    undefined
+}
+
+module.exports = {
+  wsIsSecure,
+  SCHEMES,
+  isValidSchemeName,
+  getSchemeHandler,
+}
+
+},{"./utils":84}],84:[function(require,module,exports){
+'use strict'
+
+/** @type {(value: string) => boolean} */
+const isUUID = RegExp.prototype.test.bind(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu)
+
+/** @type {(value: string) => boolean} */
+const isIPv4 = RegExp.prototype.test.bind(/^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)$/u)
+
+/** @type {(value: string) => boolean} */
+const isHexPair = RegExp.prototype.test.bind(/^[\da-f]{2}$/iu)
+
+/** @type {(value: string) => boolean} */
+const isUnreserved = RegExp.prototype.test.bind(/^[\da-z\-._~]$/iu)
+
+/** @type {(value: string) => boolean} */
+const isPathCharacter = RegExp.prototype.test.bind(/^[\da-z\-._~!$&'()*+,;=:@/]$/iu)
+
+/**
+ * @param {Array<string>} input
+ * @returns {string}
+ */
+function stringArrayToHexStripped (input) {
+  let acc = ''
+  let code = 0
+  let i = 0
+
+  for (i = 0; i < input.length; i++) {
+    code = input[i].charCodeAt(0)
+    if (code === 48) {
+      continue
+    }
+    if (!((code >= 48 && code <= 57) || (code >= 65 && code <= 70) || (code >= 97 && code <= 102))) {
+      return ''
+    }
+    acc += input[i]
+    break
+  }
+
+  for (i += 1; i < input.length; i++) {
+    code = input[i].charCodeAt(0)
+    if (!((code >= 48 && code <= 57) || (code >= 65 && code <= 70) || (code >= 97 && code <= 102))) {
+      return ''
+    }
+    acc += input[i]
+  }
+  return acc
+}
+
+/**
+ * @typedef {Object} GetIPV6Result
+ * @property {boolean} error - Indicates if there was an error parsing the IPv6 address.
+ * @property {string} address - The parsed IPv6 address.
+ * @property {string} [zone] - The zone identifier, if present.
+ */
+
+/**
+ * @param {string} value
+ * @returns {boolean}
+ */
+const nonSimpleDomain = RegExp.prototype.test.bind(/[^!"$&'()*+,\-.;=_`a-z{}~]/u)
+
+/**
+ * @param {Array<string>} buffer
+ * @returns {boolean}
+ */
+function consumeIsZone (buffer) {
+  buffer.length = 0
+  return true
+}
+
+/**
+ * @param {Array<string>} buffer
+ * @param {Array<string>} address
+ * @param {GetIPV6Result} output
+ * @returns {boolean}
+ */
+function consumeHextets (buffer, address, output) {
+  if (buffer.length) {
+    const hex = stringArrayToHexStripped(buffer)
+    if (hex !== '') {
+      address.push(hex)
+    } else {
+      output.error = true
+      return false
+    }
+    buffer.length = 0
+  }
+  return true
+}
+
+/**
+ * @param {string} input
+ * @returns {GetIPV6Result}
+ */
+function getIPV6 (input) {
+  let tokenCount = 0
+  const output = { error: false, address: '', zone: '' }
+  /** @type {Array<string>} */
+  const address = []
+  /** @type {Array<string>} */
+  const buffer = []
+  let endipv6Encountered = false
+  let endIpv6 = false
+
+  let consume = consumeHextets
+
+  for (let i = 0; i < input.length; i++) {
+    const cursor = input[i]
+    if (cursor === '[' || cursor === ']') { continue }
+    if (cursor === ':') {
+      if (endipv6Encountered === true) {
+        endIpv6 = true
+      }
+      if (!consume(buffer, address, output)) { break }
+      if (++tokenCount > 7) {
+        // not valid
+        output.error = true
+        break
+      }
+      if (i > 0 && input[i - 1] === ':') {
+        endipv6Encountered = true
+      }
+      address.push(':')
+      continue
+    } else if (cursor === '%') {
+      if (!consume(buffer, address, output)) { break }
+      // switch to zone detection
+      consume = consumeIsZone
+    } else {
+      buffer.push(cursor)
+      continue
+    }
+  }
+  if (buffer.length) {
+    if (consume === consumeIsZone) {
+      output.zone = buffer.join('')
+    } else if (endIpv6) {
+      address.push(buffer.join(''))
+    } else {
+      address.push(stringArrayToHexStripped(buffer))
+    }
+  }
+  output.address = address.join('')
+  return output
+}
+
+/**
+ * @typedef {Object} NormalizeIPv6Result
+ * @property {string} host - The normalized host.
+ * @property {string} [escapedHost] - The escaped host.
+ * @property {boolean} isIPV6 - Indicates if the host is an IPv6 address.
+ */
+
+/**
+ * @param {string} host
+ * @returns {NormalizeIPv6Result}
+ */
+function normalizeIPv6 (host) {
+  if (findToken(host, ':') < 2) { return { host, isIPV6: false } }
+  const ipv6 = getIPV6(host)
+
+  if (!ipv6.error) {
+    let newHost = ipv6.address
+    let escapedHost = ipv6.address
+    if (ipv6.zone) {
+      newHost += '%' + ipv6.zone
+      escapedHost += '%25' + ipv6.zone
+    }
+    return { host: newHost, isIPV6: true, escapedHost }
+  } else {
+    return { host, isIPV6: false }
+  }
+}
+
+/**
+ * @param {string} str
+ * @param {string} token
+ * @returns {number}
+ */
+function findToken (str, token) {
+  let ind = 0
+  for (let i = 0; i < str.length; i++) {
+    if (str[i] === token) ind++
+  }
+  return ind
+}
+
+/**
+ * @param {string} path
+ * @returns {string}
+ *
+ * @see https://datatracker.ietf.org/doc/html/rfc3986#section-5.2.4
+ */
+function removeDotSegments (path) {
+  let input = path
+  const output = []
+  let nextSlash = -1
+  let len = 0
+
+  // eslint-disable-next-line no-cond-assign
+  while (len = input.length) {
+    if (len === 1) {
+      if (input === '.') {
+        break
+      } else if (input === '/') {
+        output.push('/')
+        break
+      } else {
+        output.push(input)
+        break
+      }
+    } else if (len === 2) {
+      if (input[0] === '.') {
+        if (input[1] === '.') {
+          break
+        } else if (input[1] === '/') {
+          input = input.slice(2)
+          continue
+        }
+      } else if (input[0] === '/') {
+        if (input[1] === '.' || input[1] === '/') {
+          output.push('/')
+          break
+        }
+      }
+    } else if (len === 3) {
+      if (input === '/..') {
+        if (output.length !== 0) {
+          output.pop()
+        }
+        output.push('/')
+        break
+      }
+    }
+    if (input[0] === '.') {
+      if (input[1] === '.') {
+        if (input[2] === '/') {
+          input = input.slice(3)
+          continue
+        }
+      } else if (input[1] === '/') {
+        input = input.slice(2)
+        continue
+      }
+    } else if (input[0] === '/') {
+      if (input[1] === '.') {
+        if (input[2] === '/') {
+          input = input.slice(2)
+          continue
+        } else if (input[2] === '.') {
+          if (input[3] === '/') {
+            input = input.slice(3)
+            if (output.length !== 0) {
+              output.pop()
+            }
+            continue
+          }
+        }
+      }
+    }
+
+    // Rule 2E: Move normal path segment to output
+    if ((nextSlash = input.indexOf('/', 1)) === -1) {
+      output.push(input)
+      break
+    } else {
+      output.push(input.slice(0, nextSlash))
+      input = input.slice(nextSlash)
+    }
+  }
+
+  return output.join('')
+}
+
+/**
+ * Re-escape RFC 3986 gen-delims that must not appear literally in the host.
+ * After the URI regex parses, these characters cannot be literal in the host
+ * field, so any that appear after decoding came from percent-encoding and
+ * must be restored to prevent authority structure changes.
+ *
+ * @param {string} host
+ * @param {boolean} isIP - true for IPv4/IPv6 hosts (skip colon re-escaping)
+ * @returns {string}
+ */
+const HOST_DELIMS = { '@': '%40', '/': '%2F', '?': '%3F', '#': '%23', ':': '%3A' }
+const HOST_DELIM_RE = /[@/?#:]/g
+const HOST_DELIM_NO_COLON_RE = /[@/?#]/g
+
+function reescapeHostDelimiters (host, isIP) {
+  const re = isIP ? HOST_DELIM_NO_COLON_RE : HOST_DELIM_RE
+  re.lastIndex = 0
+  return host.replace(re, (ch) => HOST_DELIMS[ch])
+}
+
+/**
+ * Normalizes percent escapes and optionally decodes only unreserved ASCII bytes.
+ * Reserved delimiters such as `%2F` and `%2E` stay escaped.
+ *
+ * @param {string} input
+ * @param {boolean} [decodeUnreserved=false]
+ * @returns {string}
+ */
+function normalizePercentEncoding (input, decodeUnreserved = false) {
+  if (input.indexOf('%') === -1) {
+    return input
+  }
+
+  let output = ''
+
+  for (let i = 0; i < input.length; i++) {
+    if (input[i] === '%' && i + 2 < input.length) {
+      const hex = input.slice(i + 1, i + 3)
+      if (isHexPair(hex)) {
+        const normalizedHex = hex.toUpperCase()
+        const decoded = String.fromCharCode(parseInt(normalizedHex, 16))
+
+        if (decodeUnreserved && isUnreserved(decoded)) {
+          output += decoded
+        } else {
+          output += '%' + normalizedHex
+        }
+
+        i += 2
+        continue
+      }
+    }
+
+    output += input[i]
+  }
+
+  return output
+}
+
+/**
+ * Normalizes path data without turning reserved escapes into live path syntax.
+ * Valid escapes are uppercased, raw unsafe characters are escaped, and only
+ * unreserved bytes that are not `.` are decoded.
+ *
+ * @param {string} input
+ * @returns {string}
+ */
+function normalizePathEncoding (input) {
+  let output = ''
+
+  for (let i = 0; i < input.length; i++) {
+    if (input[i] === '%' && i + 2 < input.length) {
+      const hex = input.slice(i + 1, i + 3)
+      if (isHexPair(hex)) {
+        const normalizedHex = hex.toUpperCase()
+        const decoded = String.fromCharCode(parseInt(normalizedHex, 16))
+
+        if (decoded !== '.' && isUnreserved(decoded)) {
+          output += decoded
+        } else {
+          output += '%' + normalizedHex
+        }
+
+        i += 2
+        continue
+      }
+    }
+
+    if (isPathCharacter(input[i])) {
+      output += input[i]
+    } else {
+      output += escape(input[i])
+    }
+  }
+
+  return output
+}
+
+/**
+ * Escapes a component while preserving existing valid percent escapes.
+ *
+ * @param {string} input
+ * @returns {string}
+ */
+function escapePreservingEscapes (input) {
+  let output = ''
+
+  for (let i = 0; i < input.length; i++) {
+    if (input[i] === '%' && i + 2 < input.length) {
+      const hex = input.slice(i + 1, i + 3)
+      if (isHexPair(hex)) {
+        output += '%' + hex.toUpperCase()
+        i += 2
+        continue
+      }
+    }
+
+    output += escape(input[i])
+  }
+
+  return output
+}
+
+/**
+ * @param {import('../types/index').URIComponent} component
+ * @returns {string|undefined}
+ */
+function recomposeAuthority (component) {
+  const uriTokens = []
+
+  if (component.userinfo !== undefined) {
+    uriTokens.push(component.userinfo)
+    uriTokens.push('@')
+  }
+
+  if (component.host !== undefined) {
+    let host = unescape(component.host)
+    if (!isIPv4(host)) {
+      const ipV6res = normalizeIPv6(host)
+      if (ipV6res.isIPV6 === true) {
+        host = `[${ipV6res.escapedHost}]`
+      } else {
+        host = reescapeHostDelimiters(host, false)
+      }
+    }
+    uriTokens.push(host)
+  }
+
+  if (typeof component.port === 'number' || typeof component.port === 'string') {
+    uriTokens.push(':')
+    uriTokens.push(String(component.port))
+  }
+
+  return uriTokens.length ? uriTokens.join('') : undefined
+};
+
+module.exports = {
+  nonSimpleDomain,
+  recomposeAuthority,
+  reescapeHostDelimiters,
+  normalizePercentEncoding,
+  normalizePathEncoding,
+  escapePreservingEscapes,
+  removeDotSegments,
+  isIPv4,
+  isUUID,
+  normalizeIPv6,
+  stringArrayToHexStripped
+}
+
+},{}],85:[function(require,module,exports){
 /*! ieee754. BSD-3-Clause License. Feross Aboukhadijeh <https://feross.org/opensource> */
 exports.read = function (buffer, offset, isLE, mLen, nBytes) {
   var e, m
@@ -9998,7 +11889,7 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128
 }
 
-},{}],80:[function(require,module,exports){
+},{}],86:[function(require,module,exports){
 if (typeof Object.create === 'function') {
   // implementation from standard node.js 'util' module
   module.exports = function inherits(ctor, superCtor) {
@@ -10027,7 +11918,7 @@ if (typeof Object.create === 'function') {
   }
 }
 
-},{}],81:[function(require,module,exports){
+},{}],87:[function(require,module,exports){
 'use strict';
 
 var traverse = module.exports = function (schema, opts, cb) {
@@ -10122,7 +12013,7 @@ function escapeJsonPtr(str) {
   return str.replace(/~/g, '~0').replace(/\//g, '~1');
 }
 
-},{}],82:[function(require,module,exports){
+},{}],88:[function(require,module,exports){
 (function (global, factory) {
 	typeof exports === 'object' && typeof module !== 'undefined' ? module.exports = factory() :
 	typeof define === 'function' && define.amd ? define(factory) :
@@ -10511,12 +12402,34 @@ function escapeJsonPtr(str) {
 	function internalize (holder, name, reviver) {
 	    var value = holder[name];
 	    if (value != null && typeof value === 'object') {
-	        for (var key in value) {
-	            var replacement = internalize(value, key, reviver);
-	            if (replacement === undefined) {
-	                delete value[key];
-	            } else {
-	                value[key] = replacement;
+	        if (Array.isArray(value)) {
+	            for (var i = 0; i < value.length; i++) {
+	                var key = String(i);
+	                var replacement = internalize(value, key, reviver);
+	                if (replacement === undefined) {
+	                    delete value[key];
+	                } else {
+	                    Object.defineProperty(value, key, {
+	                        value: replacement,
+	                        writable: true,
+	                        enumerable: true,
+	                        configurable: true,
+	                    });
+	                }
+	            }
+	        } else {
+	            for (var key$1 in value) {
+	                var replacement$1 = internalize(value, key$1, reviver);
+	                if (replacement$1 === undefined) {
+	                    delete value[key$1];
+	                } else {
+	                    Object.defineProperty(value, key$1, {
+	                        value: replacement$1,
+	                        writable: true,
+	                        enumerable: true,
+	                        configurable: true,
+	                    });
+	                }
 	            }
 	        }
 	    }
@@ -11444,7 +13357,12 @@ function escapeJsonPtr(str) {
 	        if (Array.isArray(parent)) {
 	            parent.push(value);
 	        } else {
-	            parent[key] = value;
+	            Object.defineProperty(parent, key, {
+	                value: value,
+	                writable: true,
+	                enumerable: true,
+	                configurable: true,
+	            });
 	        }
 	    }
 
@@ -11834,7 +13752,7 @@ function escapeJsonPtr(str) {
 
 })));
 
-},{}],83:[function(require,module,exports){
+},{}],89:[function(require,module,exports){
 (function (global){(function (){
 /**
  * @license
@@ -11850,7 +13768,7 @@ function escapeJsonPtr(str) {
   var undefined;
 
   /** Used as the semantic version number. */
-  var VERSION = '4.17.21';
+  var VERSION = '4.18.1';
 
   /** Used as the size to enable large array optimizations. */
   var LARGE_ARRAY_SIZE = 200;
@@ -11858,7 +13776,8 @@ function escapeJsonPtr(str) {
   /** Error message constants. */
   var CORE_ERROR_TEXT = 'Unsupported core-js use. Try https://npms.io/search?q=ponyfill.',
       FUNC_ERROR_TEXT = 'Expected a function',
-      INVALID_TEMPL_VAR_ERROR_TEXT = 'Invalid `variable` option passed into `_.template`';
+      INVALID_TEMPL_VAR_ERROR_TEXT = 'Invalid `variable` option passed into `_.template`',
+      INVALID_TEMPL_IMPORTS_ERROR_TEXT = 'Invalid `imports` option passed into `_.template`';
 
   /** Used to stand-in for `undefined` hash values. */
   var HASH_UNDEFINED = '__lodash_hash_undefined__';
@@ -13590,6 +15509,10 @@ function escapeJsonPtr(str) {
      * embedded Ruby (ERB) as well as ES2015 template strings. Change the
      * following template settings to use alternative delimiters.
      *
+     * **Security:** See
+     * [threat model](https://github.com/lodash/lodash/blob/main/threat-model.md)
+     * — `_.template` is insecure and will be removed in v5.
+     *
      * @static
      * @memberOf _
      * @type {Object}
@@ -14138,7 +16061,7 @@ function escapeJsonPtr(str) {
      * @name has
      * @memberOf SetCache
      * @param {*} value The value to search for.
-     * @returns {number} Returns `true` if `value` is found, else `false`.
+     * @returns {boolean} Returns `true` if `value` is found, else `false`.
      */
     function setCacheHas(value) {
       return this.__data__.has(value);
@@ -15604,7 +17527,7 @@ function escapeJsonPtr(str) {
           if (isArray(iteratee)) {
             return function(value) {
               return baseGet(value, iteratee.length === 1 ? iteratee[0] : iteratee);
-            }
+            };
           }
           return iteratee;
         });
@@ -16208,8 +18131,34 @@ function escapeJsonPtr(str) {
      */
     function baseUnset(object, path) {
       path = castPath(path, object);
-      object = parent(object, path);
-      return object == null || delete object[toKey(last(path))];
+
+      // Prevent prototype pollution:
+      // https://github.com/lodash/lodash/security/advisories/GHSA-xxjr-mmjv-4gpg
+      // https://github.com/lodash/lodash/security/advisories/GHSA-f23m-r3pf-42rh
+      var index = -1,
+          length = path.length;
+
+      if (!length) {
+        return true;
+      }
+
+      while (++index < length) {
+        var key = toKey(path[index]);
+
+        // Always block "__proto__" anywhere in the path if it's not expected
+        if (key === '__proto__' && !hasOwnProperty.call(object, '__proto__')) {
+          return false;
+        }
+
+        // Block constructor/prototype as non-terminal traversal keys to prevent
+        // escaping the object graph into built-in constructors and prototypes.
+        if ((key === 'constructor' || key === 'prototype') && index < length - 1) {
+          return false;
+        }
+      }
+
+      var obj = parent(object, path);
+      return obj == null || delete obj[toKey(last(path))];
     }
 
     /**
@@ -18760,7 +20709,7 @@ function escapeJsonPtr(str) {
 
     /**
      * Creates an array with all falsey values removed. The values `false`, `null`,
-     * `0`, `""`, `undefined`, and `NaN` are falsey.
+     * `0`, `-0`, `0n`, `""`, `undefined`, and `NaN` are falsy.
      *
      * @static
      * @memberOf _
@@ -19299,7 +21248,7 @@ function escapeJsonPtr(str) {
 
       while (++index < length) {
         var pair = pairs[index];
-        result[pair[0]] = pair[1];
+        baseAssignValue(result, pair[0], pair[1]);
       }
       return result;
     }
@@ -25959,6 +27908,8 @@ function escapeJsonPtr(str) {
      * **Note:** JavaScript follows the IEEE-754 standard for resolving
      * floating-point values which can produce unexpected results.
      *
+     * **Note:** If `lower` is greater than `upper`, the values are swapped.
+     *
      * @static
      * @memberOf _
      * @since 0.7.0
@@ -25972,8 +27923,15 @@ function escapeJsonPtr(str) {
      * _.random(0, 5);
      * // => an integer between 0 and 5
      *
+     * // when lower is greater than upper the values are swapped
+     * _.random(5, 0);
+     * // => an integer between 0 and 5
+     *
      * _.random(5);
      * // => also an integer between 0 and 5
+     *
+     * _.random(-5);
+     * // => an integer between -5 and 0
      *
      * _.random(5, true);
      * // => a floating-point number between 0 and 5
@@ -26576,6 +28534,10 @@ function escapeJsonPtr(str) {
      * properties may be accessed as free variables in the template. If a setting
      * object is given, it takes precedence over `_.templateSettings` values.
      *
+     * **Security:** `_.template` is insecure and should not be used. It will be
+     * removed in Lodash v5. Avoid untrusted input. See
+     * [threat model](https://github.com/lodash/lodash/blob/main/threat-model.md).
+     *
      * **Note:** In the development build `_.template` utilizes
      * [sourceURLs](http://www.html5rocks.com/en/tutorials/developertools/sourcemaps/#toc-sourceurl)
      * for easier debugging.
@@ -26683,11 +28645,17 @@ function escapeJsonPtr(str) {
         options = undefined;
       }
       string = toString(string);
-      options = assignInWith({}, options, settings, customDefaultsAssignIn);
+      options = assignWith({}, options, settings, customDefaultsAssignIn);
 
-      var imports = assignInWith({}, options.imports, settings.imports, customDefaultsAssignIn),
+      var imports = assignWith({}, options.imports, settings.imports, customDefaultsAssignIn),
           importsKeys = keys(imports),
           importsValues = baseValues(imports, importsKeys);
+
+      arrayEach(importsKeys, function(key) {
+        if (reForbiddenIdentifierChars.test(key)) {
+          throw new Error(INVALID_TEMPL_IMPORTS_ERROR_TEXT);
+        }
+      });
 
       var isEscaping,
           isEvaluating,
@@ -29047,7 +31015,7 @@ function escapeJsonPtr(str) {
 }.call(this));
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],84:[function(require,module,exports){
+},{}],90:[function(require,module,exports){
 'use strict';
 
 const w3 = {
@@ -29062,7 +31030,7 @@ module.exports = (w, h) => ['svg', {
   viewBox: '0 0 ' + w + ' ' + h
 }];
 
-},{}],85:[function(require,module,exports){
+},{}],91:[function(require,module,exports){
 'use strict';
 
 const parse = require('./parse.js');
@@ -29086,7 +31054,7 @@ exports.p = parse;
 exports.s = stringify;
 exports.t = traverse;
 
-},{"./gen-svg.js":84,"./parse.js":86,"./renderer.js":87,"./stringify.js":88,"./traverse.js":89,"./tt.js":90}],86:[function(require,module,exports){
+},{"./gen-svg.js":90,"./parse.js":92,"./renderer.js":93,"./stringify.js":94,"./traverse.js":95,"./tt.js":96}],92:[function(require,module,exports){
 'use strict';
 
 const parser = require('sax').parser;
@@ -29139,7 +31107,7 @@ function parse(data, config) {
 
 module.exports = parse;
 
-},{"sax":93}],87:[function(require,module,exports){
+},{"sax":99}],93:[function(require,module,exports){
 'use strict';
 
 const stringify = require('./stringify.js');
@@ -29164,7 +31132,7 @@ module.exports = renderer;
 
 /* eslint-env browser */
 
-},{"./stringify.js":88}],88:[function(require,module,exports){
+},{"./stringify.js":94}],94:[function(require,module,exports){
 'use strict';
 
 const isObject = o => o && Object.prototype.toString.call(o) === '[object Object]';
@@ -29257,7 +31225,7 @@ function stringify (a, indentation) {
 
 module.exports = stringify;
 
-},{}],89:[function(require,module,exports){
+},{}],95:[function(require,module,exports){
 'use strict';
 
 function skipFn() {
@@ -29385,7 +31353,7 @@ module.exports = traverse;
 
 /* eslint complexity: 0 */
 
-},{}],90:[function(require,module,exports){
+},{}],96:[function(require,module,exports){
 'use strict';
 
 module.exports = (x, y, obj) => {
@@ -29398,7 +31366,7 @@ module.exports = (x, y, obj) => {
   return Object.assign(objt, obj);
 };
 
-},{}],91:[function(require,module,exports){
+},{}],97:[function(require,module,exports){
 // shim for using process in browser
 var process = module.exports = {};
 
@@ -29584,8 +31552,7 @@ process.chdir = function (dir) {
 };
 process.umask = function() { return 0; };
 
-},{}],92:[function(require,module,exports){
-/*! safe-buffer. MIT License. Feross Aboukhadijeh <https://feross.org/opensource> */
+},{}],98:[function(require,module,exports){
 /* eslint-disable node/no-deprecated-api */
 var buffer = require('buffer')
 var Buffer = buffer.Buffer
@@ -29607,8 +31574,6 @@ if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow)
 function SafeBuffer (arg, encodingOrOffset, length) {
   return Buffer(arg, encodingOrOffset, length)
 }
-
-SafeBuffer.prototype = Object.create(Buffer.prototype)
 
 // Copy static methods from Buffer
 copyProps(Buffer, SafeBuffer)
@@ -29651,10 +31616,13 @@ SafeBuffer.allocUnsafeSlow = function (size) {
   return buffer.SlowBuffer(size)
 }
 
-},{"buffer":75}],93:[function(require,module,exports){
+},{"buffer":78}],99:[function(require,module,exports){
 (function (Buffer){(function (){
-;(function (sax) { // wrapper for non-node envs
-  sax.parser = function (strict, opt) { return new SAXParser(strict, opt) }
+;(function (sax) {
+  // wrapper for non-node envs
+  sax.parser = function (strict, opt) {
+    return new SAXParser(strict, opt)
+  }
   sax.SAXParser = SAXParser
   sax.SAXStream = SAXStream
   sax.createStream = createStream
@@ -29671,9 +31639,18 @@ SafeBuffer.allocUnsafeSlow = function (size) {
   sax.MAX_BUFFER_LENGTH = 64 * 1024
 
   var buffers = [
-    'comment', 'sgmlDecl', 'textNode', 'tagName', 'doctype',
-    'procInstName', 'procInstBody', 'entity', 'attribName',
-    'attribValue', 'cdata', 'script'
+    'comment',
+    'sgmlDecl',
+    'textNode',
+    'tagName',
+    'doctype',
+    'procInstName',
+    'procInstBody',
+    'entity',
+    'attribName',
+    'attribValue',
+    'cdata',
+    'script',
   ]
 
   sax.EVENTS = [
@@ -29694,10 +31671,10 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     'ready',
     'script',
     'opennamespace',
-    'closenamespace'
+    'closenamespace',
   ]
 
-  function SAXParser (strict, opt) {
+  function SAXParser(strict, opt) {
     if (!(this instanceof SAXParser)) {
       return new SAXParser(strict, opt)
     }
@@ -29706,9 +31683,13 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     clearBuffers(parser)
     parser.q = parser.c = ''
     parser.bufferCheckPosition = sax.MAX_BUFFER_LENGTH
+    parser.encoding = null;
     parser.opt = opt || {}
     parser.opt.lowercase = parser.opt.lowercase || parser.opt.lowercasetags
     parser.looseCase = parser.opt.lowercase ? 'toLowerCase' : 'toUpperCase'
+    parser.opt.maxEntityCount = parser.opt.maxEntityCount || 512
+    parser.opt.maxEntityDepth = parser.opt.maxEntityDepth || 4
+    parser.entityCount = parser.entityDepth = 0
     parser.tags = []
     parser.closed = parser.closedRoot = parser.sawRoot = false
     parser.tag = parser.error = null
@@ -29716,7 +31697,10 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     parser.noscript = !!(strict || parser.opt.noscript)
     parser.state = S.BEGIN
     parser.strictEntities = parser.opt.strictEntities
-    parser.ENTITIES = parser.strictEntities ? Object.create(sax.XML_ENTITIES) : Object.create(sax.ENTITIES)
+    parser.ENTITIES =
+      parser.strictEntities ?
+        Object.create(sax.XML_ENTITIES)
+      : Object.create(sax.ENTITIES)
     parser.attribList = []
 
     // namespaces form a prototype chain.
@@ -29724,6 +31708,12 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     // which protos to its parent tag.
     if (parser.opt.xmlns) {
       parser.ns = Object.create(rootNS)
+    }
+
+    // disallow unquoted attribute values if not otherwise configured
+    // and strict mode is true
+    if (parser.opt.unquotedAttributeValues === undefined) {
+      parser.opt.unquotedAttributeValues = !strict
     }
 
     // mostly just for error reporting
@@ -29736,7 +31726,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
 
   if (!Object.create) {
     Object.create = function (o) {
-      function F () {}
+      function F() {}
       F.prototype = o
       var newf = new F()
       return newf
@@ -29751,7 +31741,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     }
   }
 
-  function checkBufferLength (parser) {
+  function checkBufferLength(parser) {
     var maxAllowed = Math.max(sax.MAX_BUFFER_LENGTH, 10)
     var maxActual = 0
     for (var i = 0, l = buffers.length; i < l; i++) {
@@ -29787,13 +31777,13 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     parser.bufferCheckPosition = m + parser.position
   }
 
-  function clearBuffers (parser) {
+  function clearBuffers(parser) {
     for (var i = 0, l = buffers.length; i < l; i++) {
       parser[buffers[i]] = ''
     }
   }
 
-  function flushBuffers (parser) {
+  function flushBuffers(parser) {
     closeText(parser)
     if (parser.cdata !== '') {
       emitNode(parser, 'oncdata', parser.cdata)
@@ -29806,11 +31796,20 @@ SafeBuffer.allocUnsafeSlow = function (size) {
   }
 
   SAXParser.prototype = {
-    end: function () { end(this) },
+    end: function () {
+      end(this)
+    },
     write: write,
-    resume: function () { this.error = null; return this },
-    close: function () { return this.write(null) },
-    flush: function () { flushBuffers(this) }
+    resume: function () {
+      this.error = null
+      return this
+    },
+    close: function () {
+      return this.write(null)
+    },
+    flush: function () {
+      flushBuffers(this)
+    },
   }
 
   var Stream
@@ -29819,16 +31818,50 @@ SafeBuffer.allocUnsafeSlow = function (size) {
   } catch (ex) {
     Stream = function () {}
   }
+  if (!Stream) Stream = function () {}
 
   var streamWraps = sax.EVENTS.filter(function (ev) {
     return ev !== 'error' && ev !== 'end'
   })
 
-  function createStream (strict, opt) {
+  function createStream(strict, opt) {
     return new SAXStream(strict, opt)
   }
 
-  function SAXStream (strict, opt) {
+  function determineBufferEncoding(data, isEnd) {
+    // BOM-based detection is the most reliable signal when present.
+    if (data.length >= 2) {
+      if (data[0] === 0xff && data[1] === 0xfe) {
+        return 'utf-16le'
+      }
+
+      if (data[0] === 0xfe && data[1] === 0xff) {
+        return 'utf-16be'
+      }
+    }
+
+    if (data.length >= 3 && data[0] === 0xef && data[1] === 0xbb && data[2] === 0xbf) {
+      return 'utf8'
+    }
+
+    if (data.length >= 4) {
+      // XML documents without a BOM still start with "<?xml", which is enough
+      // to distinguish UTF-16LE/BE from UTF-8 by looking at the zero bytes.
+      if (data[0] === 0x3c && data[1] === 0x00 && data[2] === 0x3f && data[3] === 0x00) {
+        return 'utf-16le'
+      }
+
+      if (data[0] === 0x00 && data[1] === 0x3c && data[2] === 0x00 && data[3] === 0x3f) {
+        return 'utf-16be'
+      }
+
+      return 'utf8'
+    }
+
+    return isEnd ? 'utf8' : null
+  }
+
+  function SAXStream(strict, opt) {
     if (!(this instanceof SAXStream)) {
       return new SAXStream(strict, opt)
     }
@@ -29854,7 +31887,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     }
 
     this._decoder = null
-
+    this._decoderBuffer = null
     streamWraps.forEach(function (ev) {
       Object.defineProperty(me, 'on' + ev, {
         get: function () {
@@ -29869,26 +31902,58 @@ SafeBuffer.allocUnsafeSlow = function (size) {
           me.on(ev, h)
         },
         enumerable: true,
-        configurable: false
+        configurable: false,
       })
     })
   }
 
   SAXStream.prototype = Object.create(Stream.prototype, {
     constructor: {
-      value: SAXStream
-    }
+      value: SAXStream,
+    },
   })
 
-  SAXStream.prototype.write = function (data) {
-    if (typeof Buffer === 'function' &&
-      typeof Buffer.isBuffer === 'function' &&
-      Buffer.isBuffer(data)) {
-      if (!this._decoder) {
-        var SD = require('string_decoder').StringDecoder
-        this._decoder = new SD('utf8')
+  SAXStream.prototype._decodeBuffer = function (data, isEnd) {
+    if (this._decoderBuffer) {
+      // Keep incomplete leading bytes until we have enough data to infer the
+      // stream encoding, then decode the buffered prefix together with the next chunk.
+      data = Buffer.concat([this._decoderBuffer, data])
+      this._decoderBuffer = null
+    }
+
+    if (!this._decoder) {
+      var encoding = determineBufferEncoding(data, isEnd)
+      if (!encoding) {
+        // A very short first chunk may not contain enough bytes to detect the
+        // encoding yet, so defer decoding until the next write/end call.
+        this._decoderBuffer = data
+        return ''
       }
-      data = this._decoder.write(data)
+
+      // Store the detected transport encoding so strict mode can compare it
+      // with the optional encoding declared in the XML prolog later on.
+      this._parser.encoding = encoding
+      this._decoder = new TextDecoder(encoding)
+    }
+
+    return this._decoder.decode(data, { stream: !isEnd })
+  }
+
+  SAXStream.prototype.write = function (data) {
+    if (
+      typeof Buffer === 'function' &&
+      typeof Buffer.isBuffer === 'function' &&
+      Buffer.isBuffer(data)
+    ) {
+      data = this._decodeBuffer(data, false)
+    } else if (this._decoderBuffer) {
+      // Flush any buffered binary prefix before handling a string chunk.
+      // This only matters if the caller mixes Buffer and string writes (used in test).
+      var remaining = this._decodeBuffer(Buffer.alloc(0), true)
+      if (remaining) {
+        this._parser.write(remaining)
+        this.emit('data', remaining)
+      }
     }
 
     this._parser.write(data.toString())
@@ -29900,6 +31965,20 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     if (chunk && chunk.length) {
       this.write(chunk)
     }
+    // Flush any remaining decoded data from the TextDecoder
+    if (this._decoderBuffer) {
+      var finalChunk = this._decodeBuffer(Buffer.alloc(0), true)
+      if (finalChunk) {
+        this._parser.write(finalChunk)
+        this.emit('data', finalChunk)
+      }
+    } else if (this._decoder) {
+      var remaining = this._decoder.decode()
+      if (remaining) {
+        this._parser.write(remaining)
+        this.emit('data', remaining)
+      }
+    }
     this._parser.end()
     return true
   }
@@ -29908,7 +31987,10 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     var me = this
     if (!me._parser['on' + ev] && streamWraps.indexOf(ev) !== -1) {
       me._parser['on' + ev] = function () {
-        var args = arguments.length === 1 ? [arguments[0]] : Array.apply(null, arguments)
+        var args =
+          arguments.length === 1 ?
+            [arguments[0]]
+          : Array.apply(null, arguments)
         args.splice(0, 0, ev)
         me.emit.apply(me, args)
       }
@@ -29931,30 +32013,34 @@ SafeBuffer.allocUnsafeSlow = function (size) {
   // without a significant breaking change to either this  parser, or the
   // JavaScript language.  Implementation of an emoji-capable xml parser
   // is left as an exercise for the reader.
-  var nameStart = /[:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]/
+  var nameStart =
+    /[:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]/
 
-  var nameBody = /[:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u00B7\u0300-\u036F\u203F-\u2040.\d-]/
+  var nameBody =
+    /[:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u00B7\u0300-\u036F\u203F-\u2040.\d-]/
 
-  var entityStart = /[#:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]/
-  var entityBody = /[#:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u00B7\u0300-\u036F\u203F-\u2040.\d-]/
+  var entityStart =
+    /[#:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]/
+  var entityBody =
+    /[#:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u00B7\u0300-\u036F\u203F-\u2040.\d-]/
 
-  function isWhitespace (c) {
+  function isWhitespace(c) {
     return c === ' ' || c === '\n' || c === '\r' || c === '\t'
   }
 
-  function isQuote (c) {
-    return c === '"' || c === '\''
+  function isQuote(c) {
+    return c === '"' || c === "'"
   }
 
-  function isAttribEnd (c) {
+  function isAttribEnd(c) {
     return c === '>' || isWhitespace(c)
   }
 
-  function isMatch (regex, c) {
+  function isMatch(regex, c) {
     return regex.test(c)
   }
 
-  function notMatch (regex, c) {
+  function notMatch(regex, c) {
     return !isMatch(regex, c)
   }
 
@@ -29995,271 +32081,271 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     CLOSE_TAG: S++, // </a
     CLOSE_TAG_SAW_WHITE: S++, // </a   >
     SCRIPT: S++, // <script> ...
-    SCRIPT_ENDING: S++ // <script> ... <
+    SCRIPT_ENDING: S++, // <script> ... <
   }
 
   sax.XML_ENTITIES = {
-    'amp': '&',
-    'gt': '>',
-    'lt': '<',
-    'quot': '"',
-    'apos': "'"
+    amp: '&',
+    gt: '>',
+    lt: '<',
+    quot: '"',
+    apos: "'",
   }
 
   sax.ENTITIES = {
-    'amp': '&',
-    'gt': '>',
-    'lt': '<',
-    'quot': '"',
-    'apos': "'",
-    'AElig': 198,
-    'Aacute': 193,
-    'Acirc': 194,
-    'Agrave': 192,
-    'Aring': 197,
-    'Atilde': 195,
-    'Auml': 196,
-    'Ccedil': 199,
-    'ETH': 208,
-    'Eacute': 201,
-    'Ecirc': 202,
-    'Egrave': 200,
-    'Euml': 203,
-    'Iacute': 205,
-    'Icirc': 206,
-    'Igrave': 204,
-    'Iuml': 207,
-    'Ntilde': 209,
-    'Oacute': 211,
-    'Ocirc': 212,
-    'Ograve': 210,
-    'Oslash': 216,
-    'Otilde': 213,
-    'Ouml': 214,
-    'THORN': 222,
-    'Uacute': 218,
-    'Ucirc': 219,
-    'Ugrave': 217,
-    'Uuml': 220,
-    'Yacute': 221,
-    'aacute': 225,
-    'acirc': 226,
-    'aelig': 230,
-    'agrave': 224,
-    'aring': 229,
-    'atilde': 227,
-    'auml': 228,
-    'ccedil': 231,
-    'eacute': 233,
-    'ecirc': 234,
-    'egrave': 232,
-    'eth': 240,
-    'euml': 235,
-    'iacute': 237,
-    'icirc': 238,
-    'igrave': 236,
-    'iuml': 239,
-    'ntilde': 241,
-    'oacute': 243,
-    'ocirc': 244,
-    'ograve': 242,
-    'oslash': 248,
-    'otilde': 245,
-    'ouml': 246,
-    'szlig': 223,
-    'thorn': 254,
-    'uacute': 250,
-    'ucirc': 251,
-    'ugrave': 249,
-    'uuml': 252,
-    'yacute': 253,
-    'yuml': 255,
-    'copy': 169,
-    'reg': 174,
-    'nbsp': 160,
-    'iexcl': 161,
-    'cent': 162,
-    'pound': 163,
-    'curren': 164,
-    'yen': 165,
-    'brvbar': 166,
-    'sect': 167,
-    'uml': 168,
-    'ordf': 170,
-    'laquo': 171,
-    'not': 172,
-    'shy': 173,
-    'macr': 175,
-    'deg': 176,
-    'plusmn': 177,
-    'sup1': 185,
-    'sup2': 178,
-    'sup3': 179,
-    'acute': 180,
-    'micro': 181,
-    'para': 182,
-    'middot': 183,
-    'cedil': 184,
-    'ordm': 186,
-    'raquo': 187,
-    'frac14': 188,
-    'frac12': 189,
-    'frac34': 190,
-    'iquest': 191,
-    'times': 215,
-    'divide': 247,
-    'OElig': 338,
-    'oelig': 339,
-    'Scaron': 352,
-    'scaron': 353,
-    'Yuml': 376,
-    'fnof': 402,
-    'circ': 710,
-    'tilde': 732,
-    'Alpha': 913,
-    'Beta': 914,
-    'Gamma': 915,
-    'Delta': 916,
-    'Epsilon': 917,
-    'Zeta': 918,
-    'Eta': 919,
-    'Theta': 920,
-    'Iota': 921,
-    'Kappa': 922,
-    'Lambda': 923,
-    'Mu': 924,
-    'Nu': 925,
-    'Xi': 926,
-    'Omicron': 927,
-    'Pi': 928,
-    'Rho': 929,
-    'Sigma': 931,
-    'Tau': 932,
-    'Upsilon': 933,
-    'Phi': 934,
-    'Chi': 935,
-    'Psi': 936,
-    'Omega': 937,
-    'alpha': 945,
-    'beta': 946,
-    'gamma': 947,
-    'delta': 948,
-    'epsilon': 949,
-    'zeta': 950,
-    'eta': 951,
-    'theta': 952,
-    'iota': 953,
-    'kappa': 954,
-    'lambda': 955,
-    'mu': 956,
-    'nu': 957,
-    'xi': 958,
-    'omicron': 959,
-    'pi': 960,
-    'rho': 961,
-    'sigmaf': 962,
-    'sigma': 963,
-    'tau': 964,
-    'upsilon': 965,
-    'phi': 966,
-    'chi': 967,
-    'psi': 968,
-    'omega': 969,
-    'thetasym': 977,
-    'upsih': 978,
-    'piv': 982,
-    'ensp': 8194,
-    'emsp': 8195,
-    'thinsp': 8201,
-    'zwnj': 8204,
-    'zwj': 8205,
-    'lrm': 8206,
-    'rlm': 8207,
-    'ndash': 8211,
-    'mdash': 8212,
-    'lsquo': 8216,
-    'rsquo': 8217,
-    'sbquo': 8218,
-    'ldquo': 8220,
-    'rdquo': 8221,
-    'bdquo': 8222,
-    'dagger': 8224,
-    'Dagger': 8225,
-    'bull': 8226,
-    'hellip': 8230,
-    'permil': 8240,
-    'prime': 8242,
-    'Prime': 8243,
-    'lsaquo': 8249,
-    'rsaquo': 8250,
-    'oline': 8254,
-    'frasl': 8260,
-    'euro': 8364,
-    'image': 8465,
-    'weierp': 8472,
-    'real': 8476,
-    'trade': 8482,
-    'alefsym': 8501,
-    'larr': 8592,
-    'uarr': 8593,
-    'rarr': 8594,
-    'darr': 8595,
-    'harr': 8596,
-    'crarr': 8629,
-    'lArr': 8656,
-    'uArr': 8657,
-    'rArr': 8658,
-    'dArr': 8659,
-    'hArr': 8660,
-    'forall': 8704,
-    'part': 8706,
-    'exist': 8707,
-    'empty': 8709,
-    'nabla': 8711,
-    'isin': 8712,
-    'notin': 8713,
-    'ni': 8715,
-    'prod': 8719,
-    'sum': 8721,
-    'minus': 8722,
-    'lowast': 8727,
-    'radic': 8730,
-    'prop': 8733,
-    'infin': 8734,
-    'ang': 8736,
-    'and': 8743,
-    'or': 8744,
-    'cap': 8745,
-    'cup': 8746,
-    'int': 8747,
-    'there4': 8756,
-    'sim': 8764,
-    'cong': 8773,
-    'asymp': 8776,
-    'ne': 8800,
-    'equiv': 8801,
-    'le': 8804,
-    'ge': 8805,
-    'sub': 8834,
-    'sup': 8835,
-    'nsub': 8836,
-    'sube': 8838,
-    'supe': 8839,
-    'oplus': 8853,
-    'otimes': 8855,
-    'perp': 8869,
-    'sdot': 8901,
-    'lceil': 8968,
-    'rceil': 8969,
-    'lfloor': 8970,
-    'rfloor': 8971,
-    'lang': 9001,
-    'rang': 9002,
-    'loz': 9674,
-    'spades': 9824,
-    'clubs': 9827,
-    'hearts': 9829,
-    'diams': 9830
+    amp: '&',
+    gt: '>',
+    lt: '<',
+    quot: '"',
+    apos: "'",
+    AElig: 198,
+    Aacute: 193,
+    Acirc: 194,
+    Agrave: 192,
+    Aring: 197,
+    Atilde: 195,
+    Auml: 196,
+    Ccedil: 199,
+    ETH: 208,
+    Eacute: 201,
+    Ecirc: 202,
+    Egrave: 200,
+    Euml: 203,
+    Iacute: 205,
+    Icirc: 206,
+    Igrave: 204,
+    Iuml: 207,
+    Ntilde: 209,
+    Oacute: 211,
+    Ocirc: 212,
+    Ograve: 210,
+    Oslash: 216,
+    Otilde: 213,
+    Ouml: 214,
+    THORN: 222,
+    Uacute: 218,
+    Ucirc: 219,
+    Ugrave: 217,
+    Uuml: 220,
+    Yacute: 221,
+    aacute: 225,
+    acirc: 226,
+    aelig: 230,
+    agrave: 224,
+    aring: 229,
+    atilde: 227,
+    auml: 228,
+    ccedil: 231,
+    eacute: 233,
+    ecirc: 234,
+    egrave: 232,
+    eth: 240,
+    euml: 235,
+    iacute: 237,
+    icirc: 238,
+    igrave: 236,
+    iuml: 239,
+    ntilde: 241,
+    oacute: 243,
+    ocirc: 244,
+    ograve: 242,
+    oslash: 248,
+    otilde: 245,
+    ouml: 246,
+    szlig: 223,
+    thorn: 254,
+    uacute: 250,
+    ucirc: 251,
+    ugrave: 249,
+    uuml: 252,
+    yacute: 253,
+    yuml: 255,
+    copy: 169,
+    reg: 174,
+    nbsp: 160,
+    iexcl: 161,
+    cent: 162,
+    pound: 163,
+    curren: 164,
+    yen: 165,
+    brvbar: 166,
+    sect: 167,
+    uml: 168,
+    ordf: 170,
+    laquo: 171,
+    not: 172,
+    shy: 173,
+    macr: 175,
+    deg: 176,
+    plusmn: 177,
+    sup1: 185,
+    sup2: 178,
+    sup3: 179,
+    acute: 180,
+    micro: 181,
+    para: 182,
+    middot: 183,
+    cedil: 184,
+    ordm: 186,
+    raquo: 187,
+    frac14: 188,
+    frac12: 189,
+    frac34: 190,
+    iquest: 191,
+    times: 215,
+    divide: 247,
+    OElig: 338,
+    oelig: 339,
+    Scaron: 352,
+    scaron: 353,
+    Yuml: 376,
+    fnof: 402,
+    circ: 710,
+    tilde: 732,
+    Alpha: 913,
+    Beta: 914,
+    Gamma: 915,
+    Delta: 916,
+    Epsilon: 917,
+    Zeta: 918,
+    Eta: 919,
+    Theta: 920,
+    Iota: 921,
+    Kappa: 922,
+    Lambda: 923,
+    Mu: 924,
+    Nu: 925,
+    Xi: 926,
+    Omicron: 927,
+    Pi: 928,
+    Rho: 929,
+    Sigma: 931,
+    Tau: 932,
+    Upsilon: 933,
+    Phi: 934,
+    Chi: 935,
+    Psi: 936,
+    Omega: 937,
+    alpha: 945,
+    beta: 946,
+    gamma: 947,
+    delta: 948,
+    epsilon: 949,
+    zeta: 950,
+    eta: 951,
+    theta: 952,
+    iota: 953,
+    kappa: 954,
+    lambda: 955,
+    mu: 956,
+    nu: 957,
+    xi: 958,
+    omicron: 959,
+    pi: 960,
+    rho: 961,
+    sigmaf: 962,
+    sigma: 963,
+    tau: 964,
+    upsilon: 965,
+    phi: 966,
+    chi: 967,
+    psi: 968,
+    omega: 969,
+    thetasym: 977,
+    upsih: 978,
+    piv: 982,
+    ensp: 8194,
+    emsp: 8195,
+    thinsp: 8201,
+    zwnj: 8204,
+    zwj: 8205,
+    lrm: 8206,
+    rlm: 8207,
+    ndash: 8211,
+    mdash: 8212,
+    lsquo: 8216,
+    rsquo: 8217,
+    sbquo: 8218,
+    ldquo: 8220,
+    rdquo: 8221,
+    bdquo: 8222,
+    dagger: 8224,
+    Dagger: 8225,
+    bull: 8226,
+    hellip: 8230,
+    permil: 8240,
+    prime: 8242,
+    Prime: 8243,
+    lsaquo: 8249,
+    rsaquo: 8250,
+    oline: 8254,
+    frasl: 8260,
+    euro: 8364,
+    image: 8465,
+    weierp: 8472,
+    real: 8476,
+    trade: 8482,
+    alefsym: 8501,
+    larr: 8592,
+    uarr: 8593,
+    rarr: 8594,
+    darr: 8595,
+    harr: 8596,
+    crarr: 8629,
+    lArr: 8656,
+    uArr: 8657,
+    rArr: 8658,
+    dArr: 8659,
+    hArr: 8660,
+    forall: 8704,
+    part: 8706,
+    exist: 8707,
+    empty: 8709,
+    nabla: 8711,
+    isin: 8712,
+    notin: 8713,
+    ni: 8715,
+    prod: 8719,
+    sum: 8721,
+    minus: 8722,
+    lowast: 8727,
+    radic: 8730,
+    prop: 8733,
+    infin: 8734,
+    ang: 8736,
+    and: 8743,
+    or: 8744,
+    cap: 8745,
+    cup: 8746,
+    int: 8747,
+    there4: 8756,
+    sim: 8764,
+    cong: 8773,
+    asymp: 8776,
+    ne: 8800,
+    equiv: 8801,
+    le: 8804,
+    ge: 8805,
+    sub: 8834,
+    sup: 8835,
+    nsub: 8836,
+    sube: 8838,
+    supe: 8839,
+    oplus: 8853,
+    otimes: 8855,
+    perp: 8869,
+    sdot: 8901,
+    lceil: 8968,
+    rceil: 8969,
+    lfloor: 8970,
+    rfloor: 8971,
+    lang: 9001,
+    rang: 9002,
+    loz: 9674,
+    spades: 9824,
+    clubs: 9827,
+    hearts: 9829,
+    diams: 9830,
   }
 
   Object.keys(sax.ENTITIES).forEach(function (key) {
@@ -30275,33 +32361,90 @@ SafeBuffer.allocUnsafeSlow = function (size) {
   // shorthand
   S = sax.STATE
 
-  function emit (parser, event, data) {
+  function emit(parser, event, data) {
     parser[event] && parser[event](data)
   }
 
-  function emitNode (parser, nodeType, data) {
+  function getDeclaredEncoding(body) {
+    var match = body && body.match(/(?:^|\s)encoding\s*=\s*(['"])([^'"]+)\1/i)
+    return match ? match[2] : null
+  }
+
+  function normalizeEncodingName(encoding) {
+    if (!encoding) {
+      return null
+    }
+
+    return encoding.toLowerCase().replace(/[^a-z0-9]/g, '')
+  }
+
+  function encodingsMatch(detectedEncoding, declaredEncoding) {
+    const detected = normalizeEncodingName(detectedEncoding)
+    const declared = normalizeEncodingName(declaredEncoding)
+
+    if (!detected || !declared) {
+      return true
+    }
+
+    if (declared === 'utf16') {
+      return detected === 'utf16le' || detected === 'utf16be'
+    }
+
+    return detected === declared
+  }
+
+  function validateXmlDeclarationEncoding(parser, data) {
+    if (
+      !parser.strict ||
+      !parser.encoding ||
+      !data ||
+      data.name !== 'xml'
+    ) {
+      return
+    }
+
+    var declaredEncoding = getDeclaredEncoding(data.body)
+    if (
+      declaredEncoding &&
+      !encodingsMatch(parser.encoding, declaredEncoding)
+    ) {
+      strictFail(
+        parser,
+        'XML declaration encoding ' +
+          declaredEncoding +
+          ' does not match detected stream encoding ' +
+          parser.encoding.toUpperCase()
+      )
+    }
+  }
+
+  function emitNode(parser, nodeType, data) {
     if (parser.textNode) closeText(parser)
     emit(parser, nodeType, data)
   }
 
-  function closeText (parser) {
+  function closeText(parser) {
     parser.textNode = textopts(parser.opt, parser.textNode)
     if (parser.textNode) emit(parser, 'ontext', parser.textNode)
     parser.textNode = ''
   }
 
-  function textopts (opt, text) {
+  function textopts(opt, text) {
     if (opt.trim) text = text.trim()
     if (opt.normalize) text = text.replace(/\s+/g, ' ')
     return text
   }
 
-  function error (parser, er) {
+  function error(parser, er) {
     closeText(parser)
     if (parser.trackPosition) {
-      er += '\nLine: ' + parser.line +
-        '\nColumn: ' + parser.column +
-        '\nChar: ' + parser.c
+      er +=
+        '\nLine: ' +
+        parser.line +
+        '\nColumn: ' +
+        parser.column +
+        '\nChar: ' +
+        parser.c
     }
     er = new Error(er)
     parser.error = er
@@ -30309,11 +32452,14 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     return parser
   }
 
-  function end (parser) {
-    if (parser.sawRoot && !parser.closedRoot) strictFail(parser, 'Unclosed root tag')
-    if ((parser.state !== S.BEGIN) &&
-      (parser.state !== S.BEGIN_WHITESPACE) &&
-      (parser.state !== S.TEXT)) {
+  function end(parser) {
+    if (parser.sawRoot && !parser.closedRoot)
+      strictFail(parser, 'Unclosed root tag')
+    if (
+      parser.state !== S.BEGIN &&
+      parser.state !== S.BEGIN_WHITESPACE &&
+      parser.state !== S.TEXT
+    ) {
       error(parser, 'Unexpected end')
     }
     closeText(parser)
@@ -30324,7 +32470,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     return parser
   }
 
-  function strictFail (parser, message) {
+  function strictFail(parser, message) {
     if (typeof parser !== 'object' || !(parser instanceof SAXParser)) {
       throw new Error('bad call to strictFail')
     }
@@ -30333,10 +32479,10 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     }
   }
 
-  function newTag (parser) {
+  function newTag(parser) {
     if (!parser.strict) parser.tagName = parser.tagName[parser.looseCase]()
     var parent = parser.tags[parser.tags.length - 1] || parser
-    var tag = parser.tag = { name: parser.tagName, attributes: {} }
+    var tag = (parser.tag = { name: parser.tagName, attributes: {} })
 
     // will be overridden if tag contails an xmlns="foo" or xmlns:foo="bar"
     if (parser.opt.xmlns) {
@@ -30346,9 +32492,9 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     emitNode(parser, 'onopentagstart', tag)
   }
 
-  function qname (name, attribute) {
+  function qname(name, attribute) {
     var i = name.indexOf(':')
-    var qualName = i < 0 ? [ '', name ] : name.split(':')
+    var qualName = i < 0 ? ['', name] : name.split(':')
     var prefix = qualName[0]
     var local = qualName[1]
 
@@ -30361,13 +32507,15 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     return { prefix: prefix, local: local }
   }
 
-  function attrib (parser) {
+  function attrib(parser) {
     if (!parser.strict) {
       parser.attribName = parser.attribName[parser.looseCase]()
     }
 
-    if (parser.attribList.indexOf(parser.attribName) !== -1 ||
-      parser.tag.attributes.hasOwnProperty(parser.attribName)) {
+    if (
+      parser.attribList.indexOf(parser.attribName) !== -1 ||
+      parser.tag.attributes.hasOwnProperty(parser.attribName)
+    ) {
       parser.attribName = parser.attribValue = ''
       return
     }
@@ -30380,13 +32528,26 @@ SafeBuffer.allocUnsafeSlow = function (size) {
       if (prefix === 'xmlns') {
         // namespace binding attribute. push the binding into scope
         if (local === 'xml' && parser.attribValue !== XML_NAMESPACE) {
-          strictFail(parser,
-            'xml: prefix must be bound to ' + XML_NAMESPACE + '\n' +
-            'Actual: ' + parser.attribValue)
-        } else if (local === 'xmlns' && parser.attribValue !== XMLNS_NAMESPACE) {
-          strictFail(parser,
-            'xmlns: prefix must be bound to ' + XMLNS_NAMESPACE + '\n' +
-            'Actual: ' + parser.attribValue)
+          strictFail(
+            parser,
+            'xml: prefix must be bound to ' +
+              XML_NAMESPACE +
+              '\n' +
+              'Actual: ' +
+              parser.attribValue
+          )
+        } else if (
+          local === 'xmlns' &&
+          parser.attribValue !== XMLNS_NAMESPACE
+        ) {
+          strictFail(
+            parser,
+            'xmlns: prefix must be bound to ' +
+              XMLNS_NAMESPACE +
+              '\n' +
+              'Actual: ' +
+              parser.attribValue
+          )
         } else {
           var tag = parser.tag
           var parent = parser.tags[parser.tags.length - 1] || parser
@@ -30406,14 +32567,14 @@ SafeBuffer.allocUnsafeSlow = function (size) {
       parser.tag.attributes[parser.attribName] = parser.attribValue
       emitNode(parser, 'onattribute', {
         name: parser.attribName,
-        value: parser.attribValue
+        value: parser.attribValue,
       })
     }
 
     parser.attribName = parser.attribValue = ''
   }
 
-  function openTag (parser, selfClosing) {
+  function openTag(parser, selfClosing) {
     if (parser.opt.xmlns) {
       // emit namespace binding events
       var tag = parser.tag
@@ -30425,8 +32586,10 @@ SafeBuffer.allocUnsafeSlow = function (size) {
       tag.uri = tag.ns[qn.prefix] || ''
 
       if (tag.prefix && !tag.uri) {
-        strictFail(parser, 'Unbound namespace prefix: ' +
-          JSON.stringify(parser.tagName))
+        strictFail(
+          parser,
+          'Unbound namespace prefix: ' + JSON.stringify(parser.tagName)
+        )
         tag.uri = qn.prefix
       }
 
@@ -30435,7 +32598,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
         Object.keys(tag.ns).forEach(function (p) {
           emitNode(parser, 'onopennamespace', {
             prefix: p,
-            uri: tag.ns[p]
+            uri: tag.ns[p],
           })
         })
       }
@@ -30450,20 +32613,22 @@ SafeBuffer.allocUnsafeSlow = function (size) {
         var qualName = qname(name, true)
         var prefix = qualName.prefix
         var local = qualName.local
-        var uri = prefix === '' ? '' : (tag.ns[prefix] || '')
+        var uri = prefix === '' ? '' : tag.ns[prefix] || ''
         var a = {
           name: name,
           value: value,
           prefix: prefix,
           local: local,
-          uri: uri
+          uri: uri,
         }
 
         // if there's any attributes with an undefined namespace,
         // then fail on them now.
         if (prefix && prefix !== 'xmlns' && !uri) {
-          strictFail(parser, 'Unbound namespace prefix: ' +
-            JSON.stringify(prefix))
+          strictFail(
+            parser,
+            'Unbound namespace prefix: ' + JSON.stringify(prefix)
+          )
           a.uri = prefix
         }
         parser.tag.attributes[name] = a
@@ -30492,7 +32657,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     parser.attribList.length = 0
   }
 
-  function closeTag (parser) {
+  function closeTag(parser) {
     if (!parser.tagName) {
       strictFail(parser, 'Weird empty close tag.')
       parser.textNode += '</>'
@@ -30539,7 +32704,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     parser.tagName = tagName
     var s = parser.tags.length
     while (s-- > t) {
-      var tag = parser.tag = parser.tags.pop()
+      var tag = (parser.tag = parser.tags.pop())
       parser.tagName = parser.tag.name
       emitNode(parser, 'onclosetag', parser.tagName)
 
@@ -30563,7 +32728,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     parser.state = S.TEXT
   }
 
-  function parseEntity (parser) {
+  function parseEntity(parser) {
     var entity = parser.entity
     var entityLC = entity.toLowerCase()
     var num
@@ -30588,7 +32753,12 @@ SafeBuffer.allocUnsafeSlow = function (size) {
       }
     }
     entity = entity.replace(/^0+/, '')
-    if (isNaN(num) || numStr.toLowerCase() !== entity) {
+    if (
+      isNaN(num) ||
+      numStr.toLowerCase() !== entity ||
+      num < 0 ||
+      num > 0x10ffff
+    ) {
       strictFail(parser, 'Invalid character entity')
       return '&' + parser.entity + ';'
     }
@@ -30596,7 +32766,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     return String.fromCodePoint(num)
   }
 
-  function beginWhiteSpace (parser, c) {
+  function beginWhiteSpace(parser, c) {
     if (c === '<') {
       parser.state = S.OPEN_WAKA
       parser.startTagPosition = parser.position
@@ -30609,7 +32779,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     }
   }
 
-  function charAt (chunk, i) {
+  function charAt(chunk, i) {
     var result = ''
     if (i < chunk.length) {
       result = chunk.charAt(i)
@@ -30617,14 +32787,16 @@ SafeBuffer.allocUnsafeSlow = function (size) {
     return result
   }
 
-  function write (chunk) {
+  function write(chunk) {
     var parser = this
     if (this.error) {
       throw this.error
     }
     if (parser.closed) {
-      return error(parser,
-        'Cannot write after close. Assign an onready handler.')
+      return error(
+        parser,
+        'Cannot write after close. Assign an onready handler.'
+      )
     }
     if (chunk === null) {
       return end(parser)
@@ -30682,11 +32854,17 @@ SafeBuffer.allocUnsafeSlow = function (size) {
             }
             parser.textNode += chunk.substring(starti, i - 1)
           }
-          if (c === '<' && !(parser.sawRoot && parser.closedRoot && !parser.strict)) {
+          if (
+            c === '<' &&
+            !(parser.sawRoot && parser.closedRoot && !parser.strict)
+          ) {
             parser.state = S.OPEN_WAKA
             parser.startTagPosition = parser.position
           } else {
-            if (!isWhitespace(c) && (!parser.sawRoot || parser.closedRoot)) {
+            if (
+              !isWhitespace(c) &&
+              (!parser.sawRoot || parser.closedRoot)
+            ) {
               strictFail(parser, 'Text data outside of root node.')
             }
             if (c === '&') {
@@ -30744,20 +32922,33 @@ SafeBuffer.allocUnsafeSlow = function (size) {
           continue
 
         case S.SGML_DECL:
-          if ((parser.sgmlDecl + c).toUpperCase() === CDATA) {
+          if (parser.sgmlDecl + c === '--') {
+            parser.state = S.COMMENT
+            parser.comment = ''
+            parser.sgmlDecl = ''
+            continue
+          }
+
+          if (
+            parser.doctype &&
+            parser.doctype !== true &&
+            parser.sgmlDecl
+          ) {
+            parser.state = S.DOCTYPE_DTD
+            parser.doctype += '<!' + parser.sgmlDecl + c
+            parser.sgmlDecl = ''
+          } else if ((parser.sgmlDecl + c).toUpperCase() === CDATA) {
             emitNode(parser, 'onopencdata')
             parser.state = S.CDATA
             parser.sgmlDecl = ''
             parser.cdata = ''
-          } else if (parser.sgmlDecl + c === '--') {
-            parser.state = S.COMMENT
-            parser.comment = ''
-            parser.sgmlDecl = ''
           } else if ((parser.sgmlDecl + c).toUpperCase() === DOCTYPE) {
             parser.state = S.DOCTYPE
             if (parser.doctype || parser.sawRoot) {
-              strictFail(parser,
-                'Inappropriately located doctype declaration')
+              strictFail(
+                parser,
+                'Inappropriately located doctype declaration'
+              )
             }
             parser.doctype = ''
             parser.sgmlDecl = ''
@@ -30806,12 +32997,18 @@ SafeBuffer.allocUnsafeSlow = function (size) {
           continue
 
         case S.DOCTYPE_DTD:
-          parser.doctype += c
           if (c === ']') {
+            parser.doctype += c
             parser.state = S.DOCTYPE
+          } else if (c === '<') {
+            parser.state = S.OPEN_WAKA
+            parser.startTagPosition = parser.position
           } else if (isQuote(c)) {
+            parser.doctype += c
             parser.state = S.DOCTYPE_DTD_QUOTED
             parser.q = c
+          } else {
+            parser.doctype += c
           }
           continue
 
@@ -30852,16 +33049,30 @@ SafeBuffer.allocUnsafeSlow = function (size) {
             // which is a comment of " blah -- bloo "
             parser.comment += '--' + c
             parser.state = S.COMMENT
+          } else if (parser.doctype && parser.doctype !== true) {
+            parser.state = S.DOCTYPE_DTD
           } else {
             parser.state = S.TEXT
           }
           continue
 
         case S.CDATA:
+          var starti = i - 1
+          while (c && c !== ']') {
+            c = charAt(chunk, i++)
+            if (c && parser.trackPosition) {
+              parser.position++
+              if (c === '\n') {
+                parser.line++
+                parser.column = 0
+              } else {
+                parser.column++
+              }
+            }
+          }
+          parser.cdata += chunk.substring(starti, i - 1)
           if (c === ']') {
             parser.state = S.CDATA_ENDING
-          } else {
-            parser.cdata += c
           }
           continue
 
@@ -30912,10 +33123,12 @@ SafeBuffer.allocUnsafeSlow = function (size) {
 
         case S.PROC_INST_ENDING:
           if (c === '>') {
-            emitNode(parser, 'onprocessinginstruction', {
+            const procInstEndData = {
               name: parser.procInstName,
-              body: parser.procInstBody
-            })
+              body: parser.procInstBody,
+            }
+            validateXmlDeclarationEncoding(parser, procInstEndData)
+            emitNode(parser, 'onprocessinginstruction', procInstEndData)
             parser.procInstName = parser.procInstBody = ''
             parser.state = S.TEXT
           } else {
@@ -30947,7 +33160,10 @@ SafeBuffer.allocUnsafeSlow = function (size) {
             openTag(parser, true)
             closeTag(parser)
           } else {
-            strictFail(parser, 'Forward-slash in opening tag not followed by >')
+            strictFail(
+              parser,
+              'Forward-slash in opening tag not followed by >'
+            )
             parser.state = S.ATTRIB
           }
           continue
@@ -30997,7 +33213,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
             parser.attribValue = ''
             emitNode(parser, 'onattribute', {
               name: parser.attribName,
-              value: ''
+              value: '',
             })
             parser.attribName = ''
             if (c === '>') {
@@ -31019,7 +33235,9 @@ SafeBuffer.allocUnsafeSlow = function (size) {
             parser.q = c
             parser.state = S.ATTRIB_VALUE_QUOTED
           } else {
-            strictFail(parser, 'Unquoted attribute value')
+            if (!parser.opt.unquotedAttributeValues) {
+              error(parser, 'Unquoted attribute value')
+            }
             parser.state = S.ATTRIB_VALUE_UNQUOTED
             parser.attribValue = c
           }
@@ -31092,7 +33310,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
           } else if (isMatch(nameBody, c)) {
             parser.tagName += c
           } else if (parser.script) {
-            parser.script += '</' + parser.tagName
+            parser.script += '</' + parser.tagName + c
             parser.tagName = ''
             parser.state = S.SCRIPT
           } else {
@@ -31137,10 +33355,37 @@ SafeBuffer.allocUnsafeSlow = function (size) {
           }
 
           if (c === ';') {
-            parser[buffer] += parseEntity(parser)
-            parser.entity = ''
-            parser.state = returnState
-          } else if (isMatch(parser.entity.length ? entityBody : entityStart, c)) {
+            var parsedEntity = parseEntity(parser)
+            if (
+              parser.opt.unparsedEntities &&
+              !Object.values(sax.XML_ENTITIES).includes(parsedEntity)
+            ) {
+              if ((parser.entityCount += 1) > parser.opt.maxEntityCount) {
+                error(
+                  parser,
+                  'Parsed entity count exceeds max entity count'
+                )
+              }
+
+              if ((parser.entityDepth += 1) > parser.opt.maxEntityDepth) {
+                error(
+                  parser,
+                  'Parsed entity depth exceeds max entity depth'
+                )
+              }
+
+              parser.entity = ''
+              parser.state = returnState
+              parser.write(parsedEntity)
+              parser.entityDepth -= 1
+            } else {
+              parser[buffer] += parsedEntity
+              parser.entity = ''
+              parser.state = returnState
+            }
+          } else if (
+            isMatch(parser.entity.length ? entityBody : entityStart, c)
+          ) {
             parser.entity += c
           } else {
             strictFail(parser, 'Invalid character in entity name')
@@ -31151,8 +33396,9 @@ SafeBuffer.allocUnsafeSlow = function (size) {
 
           continue
 
-        default:
+        default: /* istanbul ignore next */ {
           throw new Error(parser, 'Unknown state: ' + parser.state)
+        }
       }
     } // while
 
@@ -31165,7 +33411,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
   /*! http://mths.be/fromcodepoint v0.1.0 by @mathias */
   /* istanbul ignore next */
   if (!String.fromCodePoint) {
-    (function () {
+    ;(function () {
       var stringFromCharCode = String.fromCharCode
       var floor = Math.floor
       var fromCodePoint = function () {
@@ -31184,18 +33430,20 @@ SafeBuffer.allocUnsafeSlow = function (size) {
           if (
             !isFinite(codePoint) || // `NaN`, `+Infinity`, or `-Infinity`
             codePoint < 0 || // not a valid Unicode code point
-            codePoint > 0x10FFFF || // not a valid Unicode code point
+            codePoint > 0x10ffff || // not a valid Unicode code point
             floor(codePoint) !== codePoint // not an integer
           ) {
             throw RangeError('Invalid code point: ' + codePoint)
           }
-          if (codePoint <= 0xFFFF) { // BMP code point
+          if (codePoint <= 0xffff) {
+            // BMP code point
             codeUnits.push(codePoint)
-          } else { // Astral code point; split in surrogate halves
+          } else {
+            // Astral code point; split in surrogate halves
             // http://mathiasbynens.be/notes/javascript-encoding#surrogate-formulae
             codePoint -= 0x10000
-            highSurrogate = (codePoint >> 10) + 0xD800
-            lowSurrogate = (codePoint % 0x400) + 0xDC00
+            highSurrogate = (codePoint >> 10) + 0xd800
+            lowSurrogate = (codePoint % 0x400) + 0xdc00
             codeUnits.push(highSurrogate, lowSurrogate)
           }
           if (index + 1 === length || codeUnits.length > MAX_SIZE) {
@@ -31210,17 +33458,17 @@ SafeBuffer.allocUnsafeSlow = function (size) {
         Object.defineProperty(String, 'fromCodePoint', {
           value: fromCodePoint,
           configurable: true,
-          writable: true
+          writable: true,
         })
       } else {
         String.fromCodePoint = fromCodePoint
       }
-    }())
+    })()
   }
-})(typeof exports === 'undefined' ? this.sax = {} : exports)
+})(typeof exports === 'undefined' ? (this.sax = {}) : exports)
 
 }).call(this)}).call(this,require("buffer").Buffer)
-},{"buffer":75,"stream":94,"string_decoder":109}],94:[function(require,module,exports){
+},{"buffer":78,"stream":100}],100:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -31351,7 +33599,7 @@ Stream.prototype.pipe = function(dest, options) {
   return dest;
 };
 
-},{"events":77,"inherits":80,"readable-stream/lib/_stream_duplex.js":96,"readable-stream/lib/_stream_passthrough.js":97,"readable-stream/lib/_stream_readable.js":98,"readable-stream/lib/_stream_transform.js":99,"readable-stream/lib/_stream_writable.js":100,"readable-stream/lib/internal/streams/end-of-stream.js":104,"readable-stream/lib/internal/streams/pipeline.js":106}],95:[function(require,module,exports){
+},{"events":80,"inherits":86,"readable-stream/lib/_stream_duplex.js":102,"readable-stream/lib/_stream_passthrough.js":103,"readable-stream/lib/_stream_readable.js":104,"readable-stream/lib/_stream_transform.js":105,"readable-stream/lib/_stream_writable.js":106,"readable-stream/lib/internal/streams/end-of-stream.js":110,"readable-stream/lib/internal/streams/pipeline.js":112}],101:[function(require,module,exports){
 'use strict';
 
 function _inheritsLoose(subClass, superClass) { subClass.prototype = Object.create(superClass.prototype); subClass.prototype.constructor = subClass; subClass.__proto__ = superClass; }
@@ -31480,7 +33728,7 @@ createErrorType('ERR_UNKNOWN_ENCODING', function (arg) {
 createErrorType('ERR_STREAM_UNSHIFT_AFTER_END_EVENT', 'stream.unshift() after end event');
 module.exports.codes = codes;
 
-},{}],96:[function(require,module,exports){
+},{}],102:[function(require,module,exports){
 (function (process){(function (){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -31502,60 +33750,48 @@ module.exports.codes = codes;
 // DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 // a duplex stream is just a stream that is both readable and writable.
 // Since JS doesn't have multiple prototypal inheritance, this class
 // prototypally inherits from Readable, and then parasitically from
 // Writable.
-'use strict';
-/*<replacement>*/
 
+'use strict';
+
+/*<replacement>*/
 var objectKeys = Object.keys || function (obj) {
   var keys = [];
-
-  for (var key in obj) {
-    keys.push(key);
-  }
-
+  for (var key in obj) keys.push(key);
   return keys;
 };
 /*</replacement>*/
 
-
 module.exports = Duplex;
-
 var Readable = require('./_stream_readable');
-
 var Writable = require('./_stream_writable');
-
 require('inherits')(Duplex, Readable);
-
 {
   // Allow the keys array to be GC'ed.
   var keys = objectKeys(Writable.prototype);
-
   for (var v = 0; v < keys.length; v++) {
     var method = keys[v];
     if (!Duplex.prototype[method]) Duplex.prototype[method] = Writable.prototype[method];
   }
 }
-
 function Duplex(options) {
   if (!(this instanceof Duplex)) return new Duplex(options);
   Readable.call(this, options);
   Writable.call(this, options);
   this.allowHalfOpen = true;
-
   if (options) {
     if (options.readable === false) this.readable = false;
     if (options.writable === false) this.writable = false;
-
     if (options.allowHalfOpen === false) {
       this.allowHalfOpen = false;
       this.once('end', onend);
     }
   }
 }
-
 Object.defineProperty(Duplex.prototype, 'writableHighWaterMark', {
   // making it explicit this property is not enumerable
   // because otherwise some prototype manipulation in
@@ -31582,20 +33818,20 @@ Object.defineProperty(Duplex.prototype, 'writableLength', {
   get: function get() {
     return this._writableState.length;
   }
-}); // the no-half-open enforcer
+});
 
+// the no-half-open enforcer
 function onend() {
   // If the writable side ended, then we're ok.
-  if (this._writableState.ended) return; // no more data can be written.
-  // But allow more writes to happen in this tick.
+  if (this._writableState.ended) return;
 
+  // no more data can be written.
+  // But allow more writes to happen in this tick.
   process.nextTick(onEndNT, this);
 }
-
 function onEndNT(self) {
   self.end();
 }
-
 Object.defineProperty(Duplex.prototype, 'destroyed', {
   // making it explicit this property is not enumerable
   // because otherwise some prototype manipulation in
@@ -31605,7 +33841,6 @@ Object.defineProperty(Duplex.prototype, 'destroyed', {
     if (this._readableState === undefined || this._writableState === undefined) {
       return false;
     }
-
     return this._readableState.destroyed && this._writableState.destroyed;
   },
   set: function set(value) {
@@ -31613,16 +33848,16 @@ Object.defineProperty(Duplex.prototype, 'destroyed', {
     // has not been initialized yet
     if (this._readableState === undefined || this._writableState === undefined) {
       return;
-    } // backward compatibility, the user is explicitly
+    }
+
+    // backward compatibility, the user is explicitly
     // managing destroyed
-
-
     this._readableState.destroyed = value;
     this._writableState.destroyed = value;
   }
 });
 }).call(this)}).call(this,require('_process'))
-},{"./_stream_readable":98,"./_stream_writable":100,"_process":91,"inherits":80}],97:[function(require,module,exports){
+},{"./_stream_readable":104,"./_stream_writable":106,"_process":97,"inherits":86}],103:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -31643,26 +33878,24 @@ Object.defineProperty(Duplex.prototype, 'destroyed', {
 // DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 // a passthrough stream.
 // basically just the most minimal sort of Transform stream.
 // Every written chunk gets output as-is.
+
 'use strict';
 
 module.exports = PassThrough;
-
 var Transform = require('./_stream_transform');
-
 require('inherits')(PassThrough, Transform);
-
 function PassThrough(options) {
   if (!(this instanceof PassThrough)) return new PassThrough(options);
   Transform.call(this, options);
 }
-
 PassThrough.prototype._transform = function (chunk, encoding, cb) {
   cb(null, chunk);
 };
-},{"./_stream_transform":99,"inherits":80}],98:[function(require,module,exports){
+},{"./_stream_transform":105,"inherits":86}],104:[function(require,module,exports){
 (function (process,global){(function (){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -31684,49 +33917,40 @@ PassThrough.prototype._transform = function (chunk, encoding, cb) {
 // DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 'use strict';
 
 module.exports = Readable;
-/*<replacement>*/
 
+/*<replacement>*/
 var Duplex;
 /*</replacement>*/
 
 Readable.ReadableState = ReadableState;
+
 /*<replacement>*/
-
 var EE = require('events').EventEmitter;
-
 var EElistenerCount = function EElistenerCount(emitter, type) {
   return emitter.listeners(type).length;
 };
 /*</replacement>*/
 
 /*<replacement>*/
-
-
 var Stream = require('./internal/streams/stream');
 /*</replacement>*/
 
-
 var Buffer = require('buffer').Buffer;
-
-var OurUint8Array = global.Uint8Array || function () {};
-
+var OurUint8Array = (typeof global !== 'undefined' ? global : typeof window !== 'undefined' ? window : typeof self !== 'undefined' ? self : {}).Uint8Array || function () {};
 function _uint8ArrayToBuffer(chunk) {
   return Buffer.from(chunk);
 }
-
 function _isUint8Array(obj) {
   return Buffer.isBuffer(obj) || obj instanceof OurUint8Array;
 }
+
 /*<replacement>*/
-
-
 var debugUtil = require('util');
-
 var debug;
-
 if (debugUtil && debugUtil.debuglog) {
   debug = debugUtil.debuglog('stream');
 } else {
@@ -31734,60 +33958,57 @@ if (debugUtil && debugUtil.debuglog) {
 }
 /*</replacement>*/
 
-
 var BufferList = require('./internal/streams/buffer_list');
-
 var destroyImpl = require('./internal/streams/destroy');
-
 var _require = require('./internal/streams/state'),
-    getHighWaterMark = _require.getHighWaterMark;
-
+  getHighWaterMark = _require.getHighWaterMark;
 var _require$codes = require('../errors').codes,
-    ERR_INVALID_ARG_TYPE = _require$codes.ERR_INVALID_ARG_TYPE,
-    ERR_STREAM_PUSH_AFTER_EOF = _require$codes.ERR_STREAM_PUSH_AFTER_EOF,
-    ERR_METHOD_NOT_IMPLEMENTED = _require$codes.ERR_METHOD_NOT_IMPLEMENTED,
-    ERR_STREAM_UNSHIFT_AFTER_END_EVENT = _require$codes.ERR_STREAM_UNSHIFT_AFTER_END_EVENT; // Lazy loaded to improve the startup performance.
+  ERR_INVALID_ARG_TYPE = _require$codes.ERR_INVALID_ARG_TYPE,
+  ERR_STREAM_PUSH_AFTER_EOF = _require$codes.ERR_STREAM_PUSH_AFTER_EOF,
+  ERR_METHOD_NOT_IMPLEMENTED = _require$codes.ERR_METHOD_NOT_IMPLEMENTED,
+  ERR_STREAM_UNSHIFT_AFTER_END_EVENT = _require$codes.ERR_STREAM_UNSHIFT_AFTER_END_EVENT;
 
-
+// Lazy loaded to improve the startup performance.
 var StringDecoder;
 var createReadableStreamAsyncIterator;
 var from;
-
 require('inherits')(Readable, Stream);
-
 var errorOrDestroy = destroyImpl.errorOrDestroy;
 var kProxyEvents = ['error', 'close', 'destroy', 'pause', 'resume'];
-
 function prependListener(emitter, event, fn) {
   // Sadly this is not cacheable as some libraries bundle their own
   // event emitter implementation with them.
-  if (typeof emitter.prependListener === 'function') return emitter.prependListener(event, fn); // This is a hack to make sure that our error handler is attached before any
+  if (typeof emitter.prependListener === 'function') return emitter.prependListener(event, fn);
+
+  // This is a hack to make sure that our error handler is attached before any
   // userland ones.  NEVER DO THIS. This is here only because this code needs
   // to continue to work with older versions of Node.js that do not include
   // the prependListener() method. The goal is to eventually remove this hack.
-
   if (!emitter._events || !emitter._events[event]) emitter.on(event, fn);else if (Array.isArray(emitter._events[event])) emitter._events[event].unshift(fn);else emitter._events[event] = [fn, emitter._events[event]];
 }
-
 function ReadableState(options, stream, isDuplex) {
   Duplex = Duplex || require('./_stream_duplex');
-  options = options || {}; // Duplex streams are both readable and writable, but share
+  options = options || {};
+
+  // Duplex streams are both readable and writable, but share
   // the same options object.
   // However, some cases require setting options to different
   // values for the readable and the writable sides of the duplex stream.
   // These options can be provided separately as readableXXX and writableXXX.
+  if (typeof isDuplex !== 'boolean') isDuplex = stream instanceof Duplex;
 
-  if (typeof isDuplex !== 'boolean') isDuplex = stream instanceof Duplex; // object stream flag. Used to make read(n) ignore n and to
+  // object stream flag. Used to make read(n) ignore n and to
   // make all the buffer merging and length checks go away
-
   this.objectMode = !!options.objectMode;
-  if (isDuplex) this.objectMode = this.objectMode || !!options.readableObjectMode; // the point at which it stops calling _read() to fill the buffer
-  // Note: 0 is a valid value, means "don't call _read preemptively ever"
+  if (isDuplex) this.objectMode = this.objectMode || !!options.readableObjectMode;
 
-  this.highWaterMark = getHighWaterMark(this, options, 'readableHighWaterMark', isDuplex); // A linked list is used to store data chunks instead of an array because the
+  // the point at which it stops calling _read() to fill the buffer
+  // Note: 0 is a valid value, means "don't call _read preemptively ever"
+  this.highWaterMark = getHighWaterMark(this, options, 'readableHighWaterMark', isDuplex);
+
+  // A linked list is used to store data chunks instead of an array because the
   // linked list can remove elements from the beginning faster than
   // array.shift()
-
   this.buffer = new BufferList();
   this.length = 0;
   this.pipes = null;
@@ -31795,61 +34016,66 @@ function ReadableState(options, stream, isDuplex) {
   this.flowing = null;
   this.ended = false;
   this.endEmitted = false;
-  this.reading = false; // a flag to be able to tell if the event 'readable'/'data' is emitted
+  this.reading = false;
+
+  // a flag to be able to tell if the event 'readable'/'data' is emitted
   // immediately, or on a later tick.  We set this to true at first, because
   // any actions that shouldn't happen until "later" should generally also
   // not happen before the first read call.
+  this.sync = true;
 
-  this.sync = true; // whenever we return null, then we set a flag to say
+  // whenever we return null, then we set a flag to say
   // that we're awaiting a 'readable' event emission.
-
   this.needReadable = false;
   this.emittedReadable = false;
   this.readableListening = false;
   this.resumeScheduled = false;
-  this.paused = true; // Should close be emitted on destroy. Defaults to true.
+  this.paused = true;
 
-  this.emitClose = options.emitClose !== false; // Should .destroy() be called after 'end' (and potentially 'finish')
+  // Should close be emitted on destroy. Defaults to true.
+  this.emitClose = options.emitClose !== false;
 
-  this.autoDestroy = !!options.autoDestroy; // has it been destroyed
+  // Should .destroy() be called after 'end' (and potentially 'finish')
+  this.autoDestroy = !!options.autoDestroy;
 
-  this.destroyed = false; // Crypto is kind of old and crusty.  Historically, its default string
+  // has it been destroyed
+  this.destroyed = false;
+
+  // Crypto is kind of old and crusty.  Historically, its default string
   // encoding is 'binary' so we have to make this configurable.
   // Everything else in the universe uses 'utf8', though.
+  this.defaultEncoding = options.defaultEncoding || 'utf8';
 
-  this.defaultEncoding = options.defaultEncoding || 'utf8'; // the number of writers that are awaiting a drain event in .pipe()s
+  // the number of writers that are awaiting a drain event in .pipe()s
+  this.awaitDrain = 0;
 
-  this.awaitDrain = 0; // if true, a maybeReadMore has been scheduled
-
+  // if true, a maybeReadMore has been scheduled
   this.readingMore = false;
   this.decoder = null;
   this.encoding = null;
-
   if (options.encoding) {
     if (!StringDecoder) StringDecoder = require('string_decoder/').StringDecoder;
     this.decoder = new StringDecoder(options.encoding);
     this.encoding = options.encoding;
   }
 }
-
 function Readable(options) {
   Duplex = Duplex || require('./_stream_duplex');
-  if (!(this instanceof Readable)) return new Readable(options); // Checking for a Stream.Duplex instance is faster here instead of inside
+  if (!(this instanceof Readable)) return new Readable(options);
+
+  // Checking for a Stream.Duplex instance is faster here instead of inside
   // the ReadableState constructor, at least with V8 6.5
-
   var isDuplex = this instanceof Duplex;
-  this._readableState = new ReadableState(options, this, isDuplex); // legacy
+  this._readableState = new ReadableState(options, this, isDuplex);
 
+  // legacy
   this.readable = true;
-
   if (options) {
     if (typeof options.read === 'function') this._read = options.read;
     if (typeof options.destroy === 'function') this._destroy = options.destroy;
   }
-
   Stream.call(this);
 }
-
 Object.defineProperty(Readable.prototype, 'destroyed', {
   // making it explicit this property is not enumerable
   // because otherwise some prototype manipulation in
@@ -31859,7 +34085,6 @@ Object.defineProperty(Readable.prototype, 'destroyed', {
     if (this._readableState === undefined) {
       return false;
     }
-
     return this._readableState.destroyed;
   },
   set: function set(value) {
@@ -31867,69 +34092,60 @@ Object.defineProperty(Readable.prototype, 'destroyed', {
     // has not been initialized yet
     if (!this._readableState) {
       return;
-    } // backward compatibility, the user is explicitly
+    }
+
+    // backward compatibility, the user is explicitly
     // managing destroyed
-
-
     this._readableState.destroyed = value;
   }
 });
 Readable.prototype.destroy = destroyImpl.destroy;
 Readable.prototype._undestroy = destroyImpl.undestroy;
-
 Readable.prototype._destroy = function (err, cb) {
   cb(err);
-}; // Manually shove something into the read() buffer.
+};
+
+// Manually shove something into the read() buffer.
 // This returns true if the highWaterMark has not been hit yet,
 // similar to how Writable.write() returns true if you should
 // write() some more.
-
-
 Readable.prototype.push = function (chunk, encoding) {
   var state = this._readableState;
   var skipChunkCheck;
-
   if (!state.objectMode) {
     if (typeof chunk === 'string') {
       encoding = encoding || state.defaultEncoding;
-
       if (encoding !== state.encoding) {
         chunk = Buffer.from(chunk, encoding);
         encoding = '';
       }
-
       skipChunkCheck = true;
     }
   } else {
     skipChunkCheck = true;
   }
-
   return readableAddChunk(this, chunk, encoding, false, skipChunkCheck);
-}; // Unshift should *always* be something directly out of read()
+};
 
-
+// Unshift should *always* be something directly out of read()
 Readable.prototype.unshift = function (chunk) {
   return readableAddChunk(this, chunk, null, true, false);
 };
-
 function readableAddChunk(stream, chunk, encoding, addToFront, skipChunkCheck) {
   debug('readableAddChunk', chunk);
   var state = stream._readableState;
-
   if (chunk === null) {
     state.reading = false;
     onEofChunk(stream, state);
   } else {
     var er;
     if (!skipChunkCheck) er = chunkInvalid(state, chunk);
-
     if (er) {
       errorOrDestroy(stream, er);
     } else if (state.objectMode || chunk && chunk.length > 0) {
       if (typeof chunk !== 'string' && !state.objectMode && Object.getPrototypeOf(chunk) !== Buffer.prototype) {
         chunk = _uint8ArrayToBuffer(chunk);
       }
-
       if (addToFront) {
         if (state.endEmitted) errorOrDestroy(stream, new ERR_STREAM_UNSHIFT_AFTER_END_EVENT());else addChunk(stream, state, chunk, true);
       } else if (state.ended) {
@@ -31938,7 +34154,6 @@ function readableAddChunk(stream, chunk, encoding, addToFront, skipChunkCheck) {
         return false;
       } else {
         state.reading = false;
-
         if (state.decoder && !encoding) {
           chunk = state.decoder.write(chunk);
           if (state.objectMode || chunk.length !== 0) addChunk(stream, state, chunk, false);else maybeReadMore(stream, state);
@@ -31950,14 +34165,13 @@ function readableAddChunk(stream, chunk, encoding, addToFront, skipChunkCheck) {
       state.reading = false;
       maybeReadMore(stream, state);
     }
-  } // We can push more data if we are below the highWaterMark.
+  }
+
+  // We can push more data if we are below the highWaterMark.
   // Also, if we have no data yet, we can stand some more bytes.
   // This is to work around cases where hwm=0, such as the repl.
-
-
   return !state.ended && (state.length < state.highWaterMark || state.length === 0);
 }
-
 function addChunk(stream, state, chunk, addToFront) {
   if (state.flowing && state.length === 0 && !state.sync) {
     state.awaitDrain = 0;
@@ -31968,50 +34182,42 @@ function addChunk(stream, state, chunk, addToFront) {
     if (addToFront) state.buffer.unshift(chunk);else state.buffer.push(chunk);
     if (state.needReadable) emitReadable(stream);
   }
-
   maybeReadMore(stream, state);
 }
-
 function chunkInvalid(state, chunk) {
   var er;
-
   if (!_isUint8Array(chunk) && typeof chunk !== 'string' && chunk !== undefined && !state.objectMode) {
     er = new ERR_INVALID_ARG_TYPE('chunk', ['string', 'Buffer', 'Uint8Array'], chunk);
   }
-
   return er;
 }
-
 Readable.prototype.isPaused = function () {
   return this._readableState.flowing === false;
-}; // backwards compatibility.
+};
 
-
+// backwards compatibility.
 Readable.prototype.setEncoding = function (enc) {
   if (!StringDecoder) StringDecoder = require('string_decoder/').StringDecoder;
   var decoder = new StringDecoder(enc);
-  this._readableState.decoder = decoder; // If setEncoding(null), decoder.encoding equals utf8
+  this._readableState.decoder = decoder;
+  // If setEncoding(null), decoder.encoding equals utf8
+  this._readableState.encoding = this._readableState.decoder.encoding;
 
-  this._readableState.encoding = this._readableState.decoder.encoding; // Iterate over current buffer to convert already stored Buffers:
-
+  // Iterate over current buffer to convert already stored Buffers:
   var p = this._readableState.buffer.head;
   var content = '';
-
   while (p !== null) {
     content += decoder.write(p.data);
     p = p.next;
   }
-
   this._readableState.buffer.clear();
-
   if (content !== '') this._readableState.buffer.push(content);
   this._readableState.length = content.length;
   return this;
-}; // Don't raise the hwm > 1GB
+};
 
-
+// Don't raise the hwm > 1GB
 var MAX_HWM = 0x40000000;
-
 function computeNewHighWaterMark(n) {
   if (n >= MAX_HWM) {
     // TODO(ronag): Throw ERR_VALUE_OUT_OF_RANGE.
@@ -32027,55 +34233,54 @@ function computeNewHighWaterMark(n) {
     n |= n >>> 16;
     n++;
   }
-
   return n;
-} // This function is designed to be inlinable, so please take care when making
+}
+
+// This function is designed to be inlinable, so please take care when making
 // changes to the function body.
-
-
 function howMuchToRead(n, state) {
   if (n <= 0 || state.length === 0 && state.ended) return 0;
   if (state.objectMode) return 1;
-
   if (n !== n) {
     // Only flow one buffer at a time
     if (state.flowing && state.length) return state.buffer.head.data.length;else return state.length;
-  } // If we're asking for more than the current hwm, then raise the hwm.
-
-
+  }
+  // If we're asking for more than the current hwm, then raise the hwm.
   if (n > state.highWaterMark) state.highWaterMark = computeNewHighWaterMark(n);
-  if (n <= state.length) return n; // Don't have enough
-
+  if (n <= state.length) return n;
+  // Don't have enough
   if (!state.ended) {
     state.needReadable = true;
     return 0;
   }
-
   return state.length;
-} // you can override either this method, or the async _read(n) below.
+}
 
-
+// you can override either this method, or the async _read(n) below.
 Readable.prototype.read = function (n) {
   debug('read', n);
   n = parseInt(n, 10);
   var state = this._readableState;
   var nOrig = n;
-  if (n !== 0) state.emittedReadable = false; // if we're doing read(0) to trigger a readable event, but we
+  if (n !== 0) state.emittedReadable = false;
+
+  // if we're doing read(0) to trigger a readable event, but we
   // already have a bunch of data in the buffer, then just trigger
   // the 'readable' event and move on.
-
   if (n === 0 && state.needReadable && ((state.highWaterMark !== 0 ? state.length >= state.highWaterMark : state.length > 0) || state.ended)) {
     debug('read: emitReadable', state.length, state.ended);
     if (state.length === 0 && state.ended) endReadable(this);else emitReadable(this);
     return null;
   }
+  n = howMuchToRead(n, state);
 
-  n = howMuchToRead(n, state); // if we've ended, and we're now clear, then finish it up.
-
+  // if we've ended, and we're now clear, then finish it up.
   if (n === 0 && state.ended) {
     if (state.length === 0) endReadable(this);
     return null;
-  } // All the actual chunk generation logic needs to be
+  }
+
+  // All the actual chunk generation logic needs to be
   // *below* the call to _read.  The reason is that in certain
   // synthetic stream cases, such as passthrough streams, _read
   // may be a completely synchronous operation which may change
@@ -32096,40 +34301,37 @@ Readable.prototype.read = function (n) {
   // 'readable' etc.
   //
   // 3. Actually pull the requested chunks out of the buffer and return.
+
   // if we need a readable event, then we need to do some reading.
-
-
   var doRead = state.needReadable;
-  debug('need readable', doRead); // if we currently have less than the highWaterMark, then also read some
+  debug('need readable', doRead);
 
+  // if we currently have less than the highWaterMark, then also read some
   if (state.length === 0 || state.length - n < state.highWaterMark) {
     doRead = true;
     debug('length less than watermark', doRead);
-  } // however, if we've ended, then there's no point, and if we're already
+  }
+
+  // however, if we've ended, then there's no point, and if we're already
   // reading, then it's unnecessary.
-
-
   if (state.ended || state.reading) {
     doRead = false;
     debug('reading or ended', doRead);
   } else if (doRead) {
     debug('do read');
     state.reading = true;
-    state.sync = true; // if the length is currently zero, then we *need* a readable event.
-
-    if (state.length === 0) state.needReadable = true; // call internal read method
-
+    state.sync = true;
+    // if the length is currently zero, then we *need* a readable event.
+    if (state.length === 0) state.needReadable = true;
+    // call internal read method
     this._read(state.highWaterMark);
-
-    state.sync = false; // If _read pushed data synchronously, then `reading` will be false,
+    state.sync = false;
+    // If _read pushed data synchronously, then `reading` will be false,
     // and we need to re-evaluate how much data we can return to the user.
-
     if (!state.reading) n = howMuchToRead(nOrig, state);
   }
-
   var ret;
   if (n > 0) ret = fromList(n, state);else ret = null;
-
   if (ret === null) {
     state.needReadable = state.length <= state.highWaterMark;
     n = 0;
@@ -32137,34 +34339,28 @@ Readable.prototype.read = function (n) {
     state.length -= n;
     state.awaitDrain = 0;
   }
-
   if (state.length === 0) {
     // If we have nothing in the buffer, then we want to know
     // as soon as we *do* get something into the buffer.
-    if (!state.ended) state.needReadable = true; // If we tried to read() past the EOF, then emit end on the next tick.
+    if (!state.ended) state.needReadable = true;
 
+    // If we tried to read() past the EOF, then emit end on the next tick.
     if (nOrig !== n && state.ended) endReadable(this);
   }
-
   if (ret !== null) this.emit('data', ret);
   return ret;
 };
-
 function onEofChunk(stream, state) {
   debug('onEofChunk');
   if (state.ended) return;
-
   if (state.decoder) {
     var chunk = state.decoder.end();
-
     if (chunk && chunk.length) {
       state.buffer.push(chunk);
       state.length += state.objectMode ? 1 : chunk.length;
     }
   }
-
   state.ended = true;
-
   if (state.sync) {
     // if we are sync, wait until next tick to emit the data.
     // Otherwise we risk emitting data in the flow()
@@ -32173,61 +34369,56 @@ function onEofChunk(stream, state) {
   } else {
     // emit 'readable' now to make sure it gets picked up.
     state.needReadable = false;
-
     if (!state.emittedReadable) {
       state.emittedReadable = true;
       emitReadable_(stream);
     }
   }
-} // Don't emit readable right away in sync mode, because this can trigger
+}
+
+// Don't emit readable right away in sync mode, because this can trigger
 // another read() call => stack overflow.  This way, it might trigger
 // a nextTick recursion warning, but that's not so bad.
-
-
 function emitReadable(stream) {
   var state = stream._readableState;
   debug('emitReadable', state.needReadable, state.emittedReadable);
   state.needReadable = false;
-
   if (!state.emittedReadable) {
     debug('emitReadable', state.flowing);
     state.emittedReadable = true;
     process.nextTick(emitReadable_, stream);
   }
 }
-
 function emitReadable_(stream) {
   var state = stream._readableState;
   debug('emitReadable_', state.destroyed, state.length, state.ended);
-
   if (!state.destroyed && (state.length || state.ended)) {
     stream.emit('readable');
     state.emittedReadable = false;
-  } // The stream needs another readable event if
+  }
+
+  // The stream needs another readable event if
   // 1. It is not flowing, as the flow mechanism will take
   //    care of it.
   // 2. It is not ended.
   // 3. It is below the highWaterMark, so we can schedule
   //    another readable later.
-
-
   state.needReadable = !state.flowing && !state.ended && state.length <= state.highWaterMark;
   flow(stream);
-} // at this point, the user has presumably seen the 'readable' event,
+}
+
+// at this point, the user has presumably seen the 'readable' event,
 // and called read() to consume some data.  that may have triggered
 // in turn another _read(n) call, in which case reading = true if
 // it's in progress.
 // However, if we're not ended, or reading, and the length < hwm,
 // then go ahead and try to read some more preemptively.
-
-
 function maybeReadMore(stream, state) {
   if (!state.readingMore) {
     state.readingMore = true;
     process.nextTick(maybeReadMore_, stream, state);
   }
 }
-
 function maybeReadMore_(stream, state) {
   // Attempt to read more data if we should.
   //
@@ -32256,49 +34447,42 @@ function maybeReadMore_(stream, state) {
     var len = state.length;
     debug('maybeReadMore read 0');
     stream.read(0);
-    if (len === state.length) // didn't get any data, stop spinning.
+    if (len === state.length)
+      // didn't get any data, stop spinning.
       break;
   }
-
   state.readingMore = false;
-} // abstract method.  to be overridden in specific implementation classes.
+}
+
+// abstract method.  to be overridden in specific implementation classes.
 // call cb(er, data) where data is <= n in length.
 // for virtual (non-string, non-buffer) streams, "length" is somewhat
 // arbitrary, and perhaps not very meaningful.
-
-
 Readable.prototype._read = function (n) {
   errorOrDestroy(this, new ERR_METHOD_NOT_IMPLEMENTED('_read()'));
 };
-
 Readable.prototype.pipe = function (dest, pipeOpts) {
   var src = this;
   var state = this._readableState;
-
   switch (state.pipesCount) {
     case 0:
       state.pipes = dest;
       break;
-
     case 1:
       state.pipes = [state.pipes, dest];
       break;
-
     default:
       state.pipes.push(dest);
       break;
   }
-
   state.pipesCount += 1;
   debug('pipe count=%d opts=%j', state.pipesCount, pipeOpts);
   var doEnd = (!pipeOpts || pipeOpts.end !== false) && dest !== process.stdout && dest !== process.stderr;
   var endFn = doEnd ? onend : unpipe;
   if (state.endEmitted) process.nextTick(endFn);else src.once('end', endFn);
   dest.on('unpipe', onunpipe);
-
   function onunpipe(readable, unpipeInfo) {
     debug('onunpipe');
-
     if (readable === src) {
       if (unpipeInfo && unpipeInfo.hasUnpiped === false) {
         unpipeInfo.hasUnpiped = true;
@@ -32306,23 +34490,21 @@ Readable.prototype.pipe = function (dest, pipeOpts) {
       }
     }
   }
-
   function onend() {
     debug('onend');
     dest.end();
-  } // when the dest drains, it reduces the awaitDrain counter
+  }
+
+  // when the dest drains, it reduces the awaitDrain counter
   // on the source.  This would be more elegant with a .once()
   // handler in flow(), but adding and removing repeatedly is
   // too slow.
-
-
   var ondrain = pipeOnDrain(src);
   dest.on('drain', ondrain);
   var cleanedUp = false;
-
   function cleanup() {
-    debug('cleanup'); // cleanup event handlers once the pipe is broken
-
+    debug('cleanup');
+    // cleanup event handlers once the pipe is broken
     dest.removeListener('close', onclose);
     dest.removeListener('finish', onfinish);
     dest.removeListener('drain', ondrain);
@@ -32331,22 +34513,20 @@ Readable.prototype.pipe = function (dest, pipeOpts) {
     src.removeListener('end', onend);
     src.removeListener('end', unpipe);
     src.removeListener('data', ondata);
-    cleanedUp = true; // if the reader is waiting for a drain event from this
+    cleanedUp = true;
+
+    // if the reader is waiting for a drain event from this
     // specific writer, then it would cause it to never start
     // flowing again.
     // So, if this is awaiting a drain, then we just call it now.
     // If we don't know, then assume that we are waiting for one.
-
     if (state.awaitDrain && (!dest._writableState || dest._writableState.needDrain)) ondrain();
   }
-
   src.on('data', ondata);
-
   function ondata(chunk) {
     debug('ondata');
     var ret = dest.write(chunk);
     debug('dest.write', ret);
-
     if (ret === false) {
       // If the user unpiped during `dest.write()`, it is possible
       // to get stuck in a permanently paused state if that write
@@ -32356,87 +34536,84 @@ Readable.prototype.pipe = function (dest, pipeOpts) {
         debug('false write response, pause', state.awaitDrain);
         state.awaitDrain++;
       }
-
       src.pause();
     }
-  } // if the dest has an error, then stop piping into it.
+  }
+
+  // if the dest has an error, then stop piping into it.
   // however, don't suppress the throwing behavior for this.
-
-
   function onerror(er) {
     debug('onerror', er);
     unpipe();
     dest.removeListener('error', onerror);
     if (EElistenerCount(dest, 'error') === 0) errorOrDestroy(dest, er);
-  } // Make sure our error handler is attached before userland ones.
+  }
 
+  // Make sure our error handler is attached before userland ones.
+  prependListener(dest, 'error', onerror);
 
-  prependListener(dest, 'error', onerror); // Both close and finish should trigger unpipe, but only once.
-
+  // Both close and finish should trigger unpipe, but only once.
   function onclose() {
     dest.removeListener('finish', onfinish);
     unpipe();
   }
-
   dest.once('close', onclose);
-
   function onfinish() {
     debug('onfinish');
     dest.removeListener('close', onclose);
     unpipe();
   }
-
   dest.once('finish', onfinish);
-
   function unpipe() {
     debug('unpipe');
     src.unpipe(dest);
-  } // tell the dest that it's being piped to
+  }
 
+  // tell the dest that it's being piped to
+  dest.emit('pipe', src);
 
-  dest.emit('pipe', src); // start the flow if it hasn't been started already.
-
+  // start the flow if it hasn't been started already.
   if (!state.flowing) {
     debug('pipe resume');
     src.resume();
   }
-
   return dest;
 };
-
 function pipeOnDrain(src) {
   return function pipeOnDrainFunctionResult() {
     var state = src._readableState;
     debug('pipeOnDrain', state.awaitDrain);
     if (state.awaitDrain) state.awaitDrain--;
-
     if (state.awaitDrain === 0 && EElistenerCount(src, 'data')) {
       state.flowing = true;
       flow(src);
     }
   };
 }
-
 Readable.prototype.unpipe = function (dest) {
   var state = this._readableState;
   var unpipeInfo = {
     hasUnpiped: false
-  }; // if we're not piping anywhere, then do nothing.
+  };
 
-  if (state.pipesCount === 0) return this; // just one destination.  most common case.
+  // if we're not piping anywhere, then do nothing.
+  if (state.pipesCount === 0) return this;
 
+  // just one destination.  most common case.
   if (state.pipesCount === 1) {
     // passed in one, but it's not the right one.
     if (dest && dest !== state.pipes) return this;
-    if (!dest) dest = state.pipes; // got a match.
+    if (!dest) dest = state.pipes;
 
+    // got a match.
     state.pipes = null;
     state.pipesCount = 0;
     state.flowing = false;
     if (dest) dest.emit('unpipe', this, unpipeInfo);
     return this;
-  } // slow case. multiple pipe destinations.
+  }
 
+  // slow case. multiple pipe destinations.
 
   if (!dest) {
     // remove all.
@@ -32445,17 +34622,13 @@ Readable.prototype.unpipe = function (dest) {
     state.pipes = null;
     state.pipesCount = 0;
     state.flowing = false;
-
-    for (var i = 0; i < len; i++) {
-      dests[i].emit('unpipe', this, {
-        hasUnpiped: false
-      });
-    }
-
+    for (var i = 0; i < len; i++) dests[i].emit('unpipe', this, {
+      hasUnpiped: false
+    });
     return this;
-  } // try to find the right one.
+  }
 
-
+  // try to find the right one.
   var index = indexOf(state.pipes, dest);
   if (index === -1) return this;
   state.pipes.splice(index, 1);
@@ -32463,19 +34636,19 @@ Readable.prototype.unpipe = function (dest) {
   if (state.pipesCount === 1) state.pipes = state.pipes[0];
   dest.emit('unpipe', this, unpipeInfo);
   return this;
-}; // set up data events if they are asked for
+};
+
+// set up data events if they are asked for
 // Ensure readable listeners eventually get something
-
-
 Readable.prototype.on = function (ev, fn) {
   var res = Stream.prototype.on.call(this, ev, fn);
   var state = this._readableState;
-
   if (ev === 'data') {
     // update readableListening so that resume() may be a no-op
     // a few lines down. This is needed to support once('readable').
-    state.readableListening = this.listenerCount('readable') > 0; // Try start flowing on next tick if stream isn't explicitly paused
+    state.readableListening = this.listenerCount('readable') > 0;
 
+    // Try start flowing on next tick if stream isn't explicitly paused
     if (state.flowing !== false) this.resume();
   } else if (ev === 'readable') {
     if (!state.endEmitted && !state.readableListening) {
@@ -32483,7 +34656,6 @@ Readable.prototype.on = function (ev, fn) {
       state.flowing = false;
       state.emittedReadable = false;
       debug('on readable', state.length, state.reading);
-
       if (state.length) {
         emitReadable(this);
       } else if (!state.reading) {
@@ -32491,15 +34663,11 @@ Readable.prototype.on = function (ev, fn) {
       }
     }
   }
-
   return res;
 };
-
 Readable.prototype.addListener = Readable.prototype.on;
-
 Readable.prototype.removeListener = function (ev, fn) {
   var res = Stream.prototype.removeListener.call(this, ev, fn);
-
   if (ev === 'readable') {
     // We need to check if there is someone still listening to
     // readable and reset the state. However this needs to happen
@@ -32509,13 +34677,10 @@ Readable.prototype.removeListener = function (ev, fn) {
     // effect.
     process.nextTick(updateReadableListening, this);
   }
-
   return res;
 };
-
 Readable.prototype.removeAllListeners = function (ev) {
   var res = Stream.prototype.removeAllListeners.apply(this, arguments);
-
   if (ev === 'readable' || ev === undefined) {
     // We need to check if there is someone still listening to
     // readable and reset the state. However this needs to happen
@@ -32525,121 +34690,103 @@ Readable.prototype.removeAllListeners = function (ev) {
     // effect.
     process.nextTick(updateReadableListening, this);
   }
-
   return res;
 };
-
 function updateReadableListening(self) {
   var state = self._readableState;
   state.readableListening = self.listenerCount('readable') > 0;
-
   if (state.resumeScheduled && !state.paused) {
     // flowing needs to be set to true now, otherwise
     // the upcoming resume will not flow.
-    state.flowing = true; // crude way to check if we should resume
+    state.flowing = true;
+
+    // crude way to check if we should resume
   } else if (self.listenerCount('data') > 0) {
     self.resume();
   }
 }
-
 function nReadingNextTick(self) {
   debug('readable nexttick read 0');
   self.read(0);
-} // pause() and resume() are remnants of the legacy readable stream API
+}
+
+// pause() and resume() are remnants of the legacy readable stream API
 // If the user uses them, then switch into old mode.
-
-
 Readable.prototype.resume = function () {
   var state = this._readableState;
-
   if (!state.flowing) {
-    debug('resume'); // we flow only if there is no one listening
+    debug('resume');
+    // we flow only if there is no one listening
     // for readable, but we still have to call
     // resume()
-
     state.flowing = !state.readableListening;
     resume(this, state);
   }
-
   state.paused = false;
   return this;
 };
-
 function resume(stream, state) {
   if (!state.resumeScheduled) {
     state.resumeScheduled = true;
     process.nextTick(resume_, stream, state);
   }
 }
-
 function resume_(stream, state) {
   debug('resume', state.reading);
-
   if (!state.reading) {
     stream.read(0);
   }
-
   state.resumeScheduled = false;
   stream.emit('resume');
   flow(stream);
   if (state.flowing && !state.reading) stream.read(0);
 }
-
 Readable.prototype.pause = function () {
   debug('call pause flowing=%j', this._readableState.flowing);
-
   if (this._readableState.flowing !== false) {
     debug('pause');
     this._readableState.flowing = false;
     this.emit('pause');
   }
-
   this._readableState.paused = true;
   return this;
 };
-
 function flow(stream) {
   var state = stream._readableState;
   debug('flow', state.flowing);
+  while (state.flowing && stream.read() !== null);
+}
 
-  while (state.flowing && stream.read() !== null) {
-    ;
-  }
-} // wrap an old-style stream as the async data source.
+// wrap an old-style stream as the async data source.
 // This is *not* part of the readable stream interface.
 // It is an ugly unfortunate mess of history.
-
-
 Readable.prototype.wrap = function (stream) {
   var _this = this;
-
   var state = this._readableState;
   var paused = false;
   stream.on('end', function () {
     debug('wrapped end');
-
     if (state.decoder && !state.ended) {
       var chunk = state.decoder.end();
       if (chunk && chunk.length) _this.push(chunk);
     }
-
     _this.push(null);
   });
   stream.on('data', function (chunk) {
     debug('wrapped data');
-    if (state.decoder) chunk = state.decoder.write(chunk); // don't skip over falsy values in objectMode
+    if (state.decoder) chunk = state.decoder.write(chunk);
 
+    // don't skip over falsy values in objectMode
     if (state.objectMode && (chunk === null || chunk === undefined)) return;else if (!state.objectMode && (!chunk || !chunk.length)) return;
-
     var ret = _this.push(chunk);
-
     if (!ret) {
       paused = true;
       stream.pause();
     }
-  }); // proxy all the other methods.
-  // important when wrapping filters and duplexes.
+  });
 
+  // proxy all the other methods.
+  // important when wrapping filters and duplexes.
   for (var i in stream) {
     if (this[i] === undefined && typeof stream[i] === 'function') {
       this[i] = function methodWrap(method) {
@@ -32648,37 +34795,32 @@ Readable.prototype.wrap = function (stream) {
         };
       }(i);
     }
-  } // proxy certain important events.
+  }
 
-
+  // proxy certain important events.
   for (var n = 0; n < kProxyEvents.length; n++) {
     stream.on(kProxyEvents[n], this.emit.bind(this, kProxyEvents[n]));
-  } // when we try to consume some more bytes, simply unpause the
+  }
+
+  // when we try to consume some more bytes, simply unpause the
   // underlying stream.
-
-
   this._read = function (n) {
     debug('wrapped _read', n);
-
     if (paused) {
       paused = false;
       stream.resume();
     }
   };
-
   return this;
 };
-
 if (typeof Symbol === 'function') {
   Readable.prototype[Symbol.asyncIterator] = function () {
     if (createReadableStreamAsyncIterator === undefined) {
       createReadableStreamAsyncIterator = require('./internal/streams/async_iterator');
     }
-
     return createReadableStreamAsyncIterator(this);
   };
 }
-
 Object.defineProperty(Readable.prototype, 'readableHighWaterMark', {
   // making it explicit this property is not enumerable
   // because otherwise some prototype manipulation in
@@ -32710,8 +34852,9 @@ Object.defineProperty(Readable.prototype, 'readableFlowing', {
       this._readableState.flowing = state;
     }
   }
-}); // exposed for testing purposes only.
+});
 
+// exposed for testing purposes only.
 Readable._fromList = fromList;
 Object.defineProperty(Readable.prototype, 'readableLength', {
   // making it explicit this property is not enumerable
@@ -32721,11 +34864,12 @@ Object.defineProperty(Readable.prototype, 'readableLength', {
   get: function get() {
     return this._readableState.length;
   }
-}); // Pluck off n bytes from an array of buffers.
+});
+
+// Pluck off n bytes from an array of buffers.
 // Length is the combined lengths of all the buffers in the list.
 // This function is designed to be inlinable, so please take care when making
 // changes to the function body.
-
 function fromList(n, state) {
   // nothing buffered
   if (state.length === 0) return null;
@@ -32740,56 +34884,48 @@ function fromList(n, state) {
   }
   return ret;
 }
-
 function endReadable(stream) {
   var state = stream._readableState;
   debug('endReadable', state.endEmitted);
-
   if (!state.endEmitted) {
     state.ended = true;
     process.nextTick(endReadableNT, state, stream);
   }
 }
-
 function endReadableNT(state, stream) {
-  debug('endReadableNT', state.endEmitted, state.length); // Check that we didn't get one last unshift.
+  debug('endReadableNT', state.endEmitted, state.length);
 
+  // Check that we didn't get one last unshift.
   if (!state.endEmitted && state.length === 0) {
     state.endEmitted = true;
     stream.readable = false;
     stream.emit('end');
-
     if (state.autoDestroy) {
       // In case of duplex streams we need a way to detect
       // if the writable side is ready for autoDestroy as well
       var wState = stream._writableState;
-
       if (!wState || wState.autoDestroy && wState.finished) {
         stream.destroy();
       }
     }
   }
 }
-
 if (typeof Symbol === 'function') {
   Readable.from = function (iterable, opts) {
     if (from === undefined) {
       from = require('./internal/streams/from');
     }
-
     return from(Readable, iterable, opts);
   };
 }
-
 function indexOf(xs, x) {
   for (var i = 0, l = xs.length; i < l; i++) {
     if (xs[i] === x) return i;
   }
-
   return -1;
 }
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../errors":95,"./_stream_duplex":96,"./internal/streams/async_iterator":101,"./internal/streams/buffer_list":102,"./internal/streams/destroy":103,"./internal/streams/from":105,"./internal/streams/state":107,"./internal/streams/stream":108,"_process":91,"buffer":75,"events":77,"inherits":80,"string_decoder/":109,"util":74}],99:[function(require,module,exports){
+},{"../errors":101,"./_stream_duplex":102,"./internal/streams/async_iterator":107,"./internal/streams/buffer_list":108,"./internal/streams/destroy":109,"./internal/streams/from":111,"./internal/streams/state":113,"./internal/streams/stream":114,"_process":97,"buffer":78,"events":80,"inherits":86,"string_decoder/":115,"util":77}],105:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -32810,6 +34946,7 @@ function indexOf(xs, x) {
 // DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 // a transform stream is a readable/writable stream where you do
 // something with the data.  Sometimes it's called a "filter",
 // but that's not a great name for it, since that implies a thing where
@@ -32851,42 +34988,36 @@ function indexOf(xs, x) {
 // However, even in such a pathological case, only a single written chunk
 // would be consumed, and then the rest would wait (un-transformed) until
 // the results of the previous transformed chunk were consumed.
+
 'use strict';
 
 module.exports = Transform;
-
 var _require$codes = require('../errors').codes,
-    ERR_METHOD_NOT_IMPLEMENTED = _require$codes.ERR_METHOD_NOT_IMPLEMENTED,
-    ERR_MULTIPLE_CALLBACK = _require$codes.ERR_MULTIPLE_CALLBACK,
-    ERR_TRANSFORM_ALREADY_TRANSFORMING = _require$codes.ERR_TRANSFORM_ALREADY_TRANSFORMING,
-    ERR_TRANSFORM_WITH_LENGTH_0 = _require$codes.ERR_TRANSFORM_WITH_LENGTH_0;
-
+  ERR_METHOD_NOT_IMPLEMENTED = _require$codes.ERR_METHOD_NOT_IMPLEMENTED,
+  ERR_MULTIPLE_CALLBACK = _require$codes.ERR_MULTIPLE_CALLBACK,
+  ERR_TRANSFORM_ALREADY_TRANSFORMING = _require$codes.ERR_TRANSFORM_ALREADY_TRANSFORMING,
+  ERR_TRANSFORM_WITH_LENGTH_0 = _require$codes.ERR_TRANSFORM_WITH_LENGTH_0;
 var Duplex = require('./_stream_duplex');
-
 require('inherits')(Transform, Duplex);
-
 function afterTransform(er, data) {
   var ts = this._transformState;
   ts.transforming = false;
   var cb = ts.writecb;
-
   if (cb === null) {
     return this.emit('error', new ERR_MULTIPLE_CALLBACK());
   }
-
   ts.writechunk = null;
   ts.writecb = null;
-  if (data != null) // single equals check for both `null` and `undefined`
+  if (data != null)
+    // single equals check for both `null` and `undefined`
     this.push(data);
   cb(er);
   var rs = this._readableState;
   rs.reading = false;
-
   if (rs.needReadable || rs.length < rs.highWaterMark) {
     this._read(rs.highWaterMark);
   }
 }
-
 function Transform(options) {
   if (!(this instanceof Transform)) return new Transform(options);
   Duplex.call(this, options);
@@ -32897,26 +35028,25 @@ function Transform(options) {
     writecb: null,
     writechunk: null,
     writeencoding: null
-  }; // start out asking for a readable event once data is transformed.
+  };
 
-  this._readableState.needReadable = true; // we have implemented the _read method, and done the other things
+  // start out asking for a readable event once data is transformed.
+  this._readableState.needReadable = true;
+
+  // we have implemented the _read method, and done the other things
   // that Readable wants before the first _read call, so unset the
   // sync guard flag.
-
   this._readableState.sync = false;
-
   if (options) {
     if (typeof options.transform === 'function') this._transform = options.transform;
     if (typeof options.flush === 'function') this._flush = options.flush;
-  } // When the writable side finishes, then flush out anything remaining.
+  }
 
-
+  // When the writable side finishes, then flush out anything remaining.
   this.on('prefinish', prefinish);
 }
-
 function prefinish() {
   var _this = this;
-
   if (typeof this._flush === 'function' && !this._readableState.destroyed) {
     this._flush(function (er, data) {
       done(_this, er, data);
@@ -32925,11 +35055,12 @@ function prefinish() {
     done(this, null, null);
   }
 }
-
 Transform.prototype.push = function (chunk, encoding) {
   this._transformState.needTransform = false;
   return Duplex.prototype.push.call(this, chunk, encoding);
-}; // This is the part where you do stuff!
+};
+
+// This is the part where you do stuff!
 // override this function in implementation classes.
 // 'chunk' is an input chunk.
 //
@@ -32939,33 +35070,27 @@ Transform.prototype.push = function (chunk, encoding) {
 // Call `cb(err)` when you are done with this chunk.  If you pass
 // an error, then that'll put the hurt on the whole operation.  If you
 // never call cb(), then you'll never get another chunk.
-
-
 Transform.prototype._transform = function (chunk, encoding, cb) {
   cb(new ERR_METHOD_NOT_IMPLEMENTED('_transform()'));
 };
-
 Transform.prototype._write = function (chunk, encoding, cb) {
   var ts = this._transformState;
   ts.writecb = cb;
   ts.writechunk = chunk;
   ts.writeencoding = encoding;
-
   if (!ts.transforming) {
     var rs = this._readableState;
     if (ts.needTransform || rs.needReadable || rs.length < rs.highWaterMark) this._read(rs.highWaterMark);
   }
-}; // Doesn't matter what the args are here.
+};
+
+// Doesn't matter what the args are here.
 // _transform does all the work.
 // That we got here means that the readable side wants more data.
-
-
 Transform.prototype._read = function (n) {
   var ts = this._transformState;
-
   if (ts.writechunk !== null && !ts.transforming) {
     ts.transforming = true;
-
     this._transform(ts.writechunk, ts.writeencoding, ts.afterTransform);
   } else {
     // mark that we need a transform, so that any data that comes in
@@ -32973,25 +35098,25 @@ Transform.prototype._read = function (n) {
     ts.needTransform = true;
   }
 };
-
 Transform.prototype._destroy = function (err, cb) {
   Duplex.prototype._destroy.call(this, err, function (err2) {
     cb(err2);
   });
 };
-
 function done(stream, er, data) {
   if (er) return stream.emit('error', er);
-  if (data != null) // single equals check for both `null` and `undefined`
-    stream.push(data); // TODO(BridgeAR): Write a test for these two error cases
+  if (data != null)
+    // single equals check for both `null` and `undefined`
+    stream.push(data);
+
+  // TODO(BridgeAR): Write a test for these two error cases
   // if there's nothing in the write buffer, then that means
   // that nothing more will ever be provided
-
   if (stream._writableState.length) throw new ERR_TRANSFORM_WITH_LENGTH_0();
   if (stream._transformState.transforming) throw new ERR_TRANSFORM_ALREADY_TRANSFORMING();
   return stream.push(null);
 }
-},{"../errors":95,"./_stream_duplex":96,"inherits":80}],100:[function(require,module,exports){
+},{"../errors":101,"./_stream_duplex":102,"inherits":86}],106:[function(require,module,exports){
 (function (process,global){(function (){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -33013,29 +35138,29 @@ function done(stream, er, data) {
 // DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 // A bit simpler than readable streams.
 // Implement an async ._write(chunk, encoding, cb), and it'll handle all
 // the drain event emission and buffering.
+
 'use strict';
 
 module.exports = Writable;
-/* <replacement> */
 
+/* <replacement> */
 function WriteReq(chunk, encoding, cb) {
   this.chunk = chunk;
   this.encoding = encoding;
   this.callback = cb;
   this.next = null;
-} // It seems a linked list but it is not
+}
+
+// It seems a linked list but it is not
 // there will be only 2 of these for each stream
-
-
 function CorkedRequest(state) {
   var _this = this;
-
   this.next = null;
   this.entry = null;
-
   this.finish = function () {
     onCorkedFinish(_this, state);
   };
@@ -33043,155 +35168,159 @@ function CorkedRequest(state) {
 /* </replacement> */
 
 /*<replacement>*/
-
-
 var Duplex;
 /*</replacement>*/
 
 Writable.WritableState = WritableState;
-/*<replacement>*/
 
+/*<replacement>*/
 var internalUtil = {
   deprecate: require('util-deprecate')
 };
 /*</replacement>*/
 
 /*<replacement>*/
-
 var Stream = require('./internal/streams/stream');
 /*</replacement>*/
 
-
 var Buffer = require('buffer').Buffer;
-
-var OurUint8Array = global.Uint8Array || function () {};
-
+var OurUint8Array = (typeof global !== 'undefined' ? global : typeof window !== 'undefined' ? window : typeof self !== 'undefined' ? self : {}).Uint8Array || function () {};
 function _uint8ArrayToBuffer(chunk) {
   return Buffer.from(chunk);
 }
-
 function _isUint8Array(obj) {
   return Buffer.isBuffer(obj) || obj instanceof OurUint8Array;
 }
-
 var destroyImpl = require('./internal/streams/destroy');
-
 var _require = require('./internal/streams/state'),
-    getHighWaterMark = _require.getHighWaterMark;
-
+  getHighWaterMark = _require.getHighWaterMark;
 var _require$codes = require('../errors').codes,
-    ERR_INVALID_ARG_TYPE = _require$codes.ERR_INVALID_ARG_TYPE,
-    ERR_METHOD_NOT_IMPLEMENTED = _require$codes.ERR_METHOD_NOT_IMPLEMENTED,
-    ERR_MULTIPLE_CALLBACK = _require$codes.ERR_MULTIPLE_CALLBACK,
-    ERR_STREAM_CANNOT_PIPE = _require$codes.ERR_STREAM_CANNOT_PIPE,
-    ERR_STREAM_DESTROYED = _require$codes.ERR_STREAM_DESTROYED,
-    ERR_STREAM_NULL_VALUES = _require$codes.ERR_STREAM_NULL_VALUES,
-    ERR_STREAM_WRITE_AFTER_END = _require$codes.ERR_STREAM_WRITE_AFTER_END,
-    ERR_UNKNOWN_ENCODING = _require$codes.ERR_UNKNOWN_ENCODING;
-
+  ERR_INVALID_ARG_TYPE = _require$codes.ERR_INVALID_ARG_TYPE,
+  ERR_METHOD_NOT_IMPLEMENTED = _require$codes.ERR_METHOD_NOT_IMPLEMENTED,
+  ERR_MULTIPLE_CALLBACK = _require$codes.ERR_MULTIPLE_CALLBACK,
+  ERR_STREAM_CANNOT_PIPE = _require$codes.ERR_STREAM_CANNOT_PIPE,
+  ERR_STREAM_DESTROYED = _require$codes.ERR_STREAM_DESTROYED,
+  ERR_STREAM_NULL_VALUES = _require$codes.ERR_STREAM_NULL_VALUES,
+  ERR_STREAM_WRITE_AFTER_END = _require$codes.ERR_STREAM_WRITE_AFTER_END,
+  ERR_UNKNOWN_ENCODING = _require$codes.ERR_UNKNOWN_ENCODING;
 var errorOrDestroy = destroyImpl.errorOrDestroy;
-
 require('inherits')(Writable, Stream);
-
 function nop() {}
-
 function WritableState(options, stream, isDuplex) {
   Duplex = Duplex || require('./_stream_duplex');
-  options = options || {}; // Duplex streams are both readable and writable, but share
+  options = options || {};
+
+  // Duplex streams are both readable and writable, but share
   // the same options object.
   // However, some cases require setting options to different
   // values for the readable and the writable sides of the duplex stream,
   // e.g. options.readableObjectMode vs. options.writableObjectMode, etc.
+  if (typeof isDuplex !== 'boolean') isDuplex = stream instanceof Duplex;
 
-  if (typeof isDuplex !== 'boolean') isDuplex = stream instanceof Duplex; // object stream flag to indicate whether or not this stream
+  // object stream flag to indicate whether or not this stream
   // contains buffers or objects.
-
   this.objectMode = !!options.objectMode;
-  if (isDuplex) this.objectMode = this.objectMode || !!options.writableObjectMode; // the point at which write() starts returning false
+  if (isDuplex) this.objectMode = this.objectMode || !!options.writableObjectMode;
+
+  // the point at which write() starts returning false
   // Note: 0 is a valid value, means that we always return false if
   // the entire buffer is not flushed immediately on write()
+  this.highWaterMark = getHighWaterMark(this, options, 'writableHighWaterMark', isDuplex);
 
-  this.highWaterMark = getHighWaterMark(this, options, 'writableHighWaterMark', isDuplex); // if _final has been called
+  // if _final has been called
+  this.finalCalled = false;
 
-  this.finalCalled = false; // drain event flag.
+  // drain event flag.
+  this.needDrain = false;
+  // at the start of calling end()
+  this.ending = false;
+  // when end() has been called, and returned
+  this.ended = false;
+  // when 'finish' is emitted
+  this.finished = false;
 
-  this.needDrain = false; // at the start of calling end()
+  // has it been destroyed
+  this.destroyed = false;
 
-  this.ending = false; // when end() has been called, and returned
-
-  this.ended = false; // when 'finish' is emitted
-
-  this.finished = false; // has it been destroyed
-
-  this.destroyed = false; // should we decode strings into buffers before passing to _write?
+  // should we decode strings into buffers before passing to _write?
   // this is here so that some node-core streams can optimize string
   // handling at a lower level.
-
   var noDecode = options.decodeStrings === false;
-  this.decodeStrings = !noDecode; // Crypto is kind of old and crusty.  Historically, its default string
+  this.decodeStrings = !noDecode;
+
+  // Crypto is kind of old and crusty.  Historically, its default string
   // encoding is 'binary' so we have to make this configurable.
   // Everything else in the universe uses 'utf8', though.
+  this.defaultEncoding = options.defaultEncoding || 'utf8';
 
-  this.defaultEncoding = options.defaultEncoding || 'utf8'; // not an actual buffer we keep track of, but a measurement
+  // not an actual buffer we keep track of, but a measurement
   // of how much we're waiting to get pushed to some underlying
   // socket or file.
+  this.length = 0;
 
-  this.length = 0; // a flag to see when we're in the middle of a write.
+  // a flag to see when we're in the middle of a write.
+  this.writing = false;
 
-  this.writing = false; // when true all writes will be buffered until .uncork() call
+  // when true all writes will be buffered until .uncork() call
+  this.corked = 0;
 
-  this.corked = 0; // a flag to be able to tell if the onwrite cb is called immediately,
+  // a flag to be able to tell if the onwrite cb is called immediately,
   // or on a later tick.  We set this to true at first, because any
   // actions that shouldn't happen until "later" should generally also
   // not happen before the first write call.
+  this.sync = true;
 
-  this.sync = true; // a flag to know if we're processing previously buffered items, which
+  // a flag to know if we're processing previously buffered items, which
   // may call the _write() callback in the same tick, so that we don't
   // end up in an overlapped onwrite situation.
+  this.bufferProcessing = false;
 
-  this.bufferProcessing = false; // the callback that's passed to _write(chunk,cb)
-
+  // the callback that's passed to _write(chunk,cb)
   this.onwrite = function (er) {
     onwrite(stream, er);
-  }; // the callback that the user supplies to write(chunk,encoding,cb)
+  };
 
+  // the callback that the user supplies to write(chunk,encoding,cb)
+  this.writecb = null;
 
-  this.writecb = null; // the amount that is being written when _write is called.
-
+  // the amount that is being written when _write is called.
   this.writelen = 0;
   this.bufferedRequest = null;
-  this.lastBufferedRequest = null; // number of pending user-supplied write callbacks
+  this.lastBufferedRequest = null;
+
+  // number of pending user-supplied write callbacks
   // this must be 0 before 'finish' can be emitted
+  this.pendingcb = 0;
 
-  this.pendingcb = 0; // emit prefinish if the only thing we're waiting for is _write cbs
+  // emit prefinish if the only thing we're waiting for is _write cbs
   // This is relevant for synchronous Transform streams
+  this.prefinished = false;
 
-  this.prefinished = false; // True if the error was already emitted and should not be thrown again
+  // True if the error was already emitted and should not be thrown again
+  this.errorEmitted = false;
 
-  this.errorEmitted = false; // Should close be emitted on destroy. Defaults to true.
+  // Should close be emitted on destroy. Defaults to true.
+  this.emitClose = options.emitClose !== false;
 
-  this.emitClose = options.emitClose !== false; // Should .destroy() be called after 'finish' (and potentially 'end')
+  // Should .destroy() be called after 'finish' (and potentially 'end')
+  this.autoDestroy = !!options.autoDestroy;
 
-  this.autoDestroy = !!options.autoDestroy; // count buffered requests
+  // count buffered requests
+  this.bufferedRequestCount = 0;
 
-  this.bufferedRequestCount = 0; // allocate the first CorkedRequest, there is always
+  // allocate the first CorkedRequest, there is always
   // one allocated and free to use, and we maintain at most two
-
   this.corkedRequestsFree = new CorkedRequest(this);
 }
-
 WritableState.prototype.getBuffer = function getBuffer() {
   var current = this.bufferedRequest;
   var out = [];
-
   while (current) {
     out.push(current);
     current = current.next;
   }
-
   return out;
 };
-
 (function () {
   try {
     Object.defineProperty(WritableState.prototype, 'buffer', {
@@ -33200,12 +35329,11 @@ WritableState.prototype.getBuffer = function getBuffer() {
       }, '_writableState.buffer is deprecated. Use _writableState.getBuffer ' + 'instead.', 'DEP0003')
     });
   } catch (_) {}
-})(); // Test _writableState for inheritance to account for Duplex streams,
+})();
+
+// Test _writableState for inheritance to account for Duplex streams,
 // whose prototype chain only points to Readable.
-
-
 var realHasInstance;
-
 if (typeof Symbol === 'function' && Symbol.hasInstance && typeof Function.prototype[Symbol.hasInstance] === 'function') {
   realHasInstance = Function.prototype[Symbol.hasInstance];
   Object.defineProperty(Writable, Symbol.hasInstance, {
@@ -33220,81 +35348,73 @@ if (typeof Symbol === 'function' && Symbol.hasInstance && typeof Function.protot
     return object instanceof this;
   };
 }
-
 function Writable(options) {
-  Duplex = Duplex || require('./_stream_duplex'); // Writable ctor is applied to Duplexes, too.
+  Duplex = Duplex || require('./_stream_duplex');
+
+  // Writable ctor is applied to Duplexes, too.
   // `realHasInstance` is necessary because using plain `instanceof`
   // would return false, as no `_writableState` property is attached.
+
   // Trying to use the custom `instanceof` for Writable here will also break the
   // Node.js LazyTransform implementation, which has a non-trivial getter for
   // `_writableState` that would lead to infinite recursion.
+
   // Checking for a Stream.Duplex instance is faster here instead of inside
   // the WritableState constructor, at least with V8 6.5
-
   var isDuplex = this instanceof Duplex;
   if (!isDuplex && !realHasInstance.call(Writable, this)) return new Writable(options);
-  this._writableState = new WritableState(options, this, isDuplex); // legacy.
+  this._writableState = new WritableState(options, this, isDuplex);
 
+  // legacy.
   this.writable = true;
-
   if (options) {
     if (typeof options.write === 'function') this._write = options.write;
     if (typeof options.writev === 'function') this._writev = options.writev;
     if (typeof options.destroy === 'function') this._destroy = options.destroy;
     if (typeof options.final === 'function') this._final = options.final;
   }
-
   Stream.call(this);
-} // Otherwise people can pipe Writable streams, which is just wrong.
+}
 
-
+// Otherwise people can pipe Writable streams, which is just wrong.
 Writable.prototype.pipe = function () {
   errorOrDestroy(this, new ERR_STREAM_CANNOT_PIPE());
 };
-
 function writeAfterEnd(stream, cb) {
-  var er = new ERR_STREAM_WRITE_AFTER_END(); // TODO: defer error events consistently everywhere, not just the cb
-
+  var er = new ERR_STREAM_WRITE_AFTER_END();
+  // TODO: defer error events consistently everywhere, not just the cb
   errorOrDestroy(stream, er);
   process.nextTick(cb, er);
-} // Checks that a user-supplied chunk is valid, especially for the particular
+}
+
+// Checks that a user-supplied chunk is valid, especially for the particular
 // mode the stream is in. Currently this means that `null` is never accepted
 // and undefined/non-string values are only allowed in object mode.
-
-
 function validChunk(stream, state, chunk, cb) {
   var er;
-
   if (chunk === null) {
     er = new ERR_STREAM_NULL_VALUES();
   } else if (typeof chunk !== 'string' && !state.objectMode) {
     er = new ERR_INVALID_ARG_TYPE('chunk', ['string', 'Buffer'], chunk);
   }
-
   if (er) {
     errorOrDestroy(stream, er);
     process.nextTick(cb, er);
     return false;
   }
-
   return true;
 }
-
 Writable.prototype.write = function (chunk, encoding, cb) {
   var state = this._writableState;
   var ret = false;
-
   var isBuf = !state.objectMode && _isUint8Array(chunk);
-
   if (isBuf && !Buffer.isBuffer(chunk)) {
     chunk = _uint8ArrayToBuffer(chunk);
   }
-
   if (typeof encoding === 'function') {
     cb = encoding;
     encoding = null;
   }
-
   if (isBuf) encoding = 'buffer';else if (!encoding) encoding = state.defaultEncoding;
   if (typeof cb !== 'function') cb = nop;
   if (state.ending) writeAfterEnd(this, cb);else if (isBuf || validChunk(this, state, chunk, cb)) {
@@ -33303,20 +35423,16 @@ Writable.prototype.write = function (chunk, encoding, cb) {
   }
   return ret;
 };
-
 Writable.prototype.cork = function () {
   this._writableState.corked++;
 };
-
 Writable.prototype.uncork = function () {
   var state = this._writableState;
-
   if (state.corked) {
     state.corked--;
     if (!state.writing && !state.corked && !state.bufferProcessing && state.bufferedRequest) clearBuffer(this, state);
   }
 };
-
 Writable.prototype.setDefaultEncoding = function setDefaultEncoding(encoding) {
   // node::ParseEncoding() requires lower case.
   if (typeof encoding === 'string') encoding = encoding.toLowerCase();
@@ -33324,7 +35440,6 @@ Writable.prototype.setDefaultEncoding = function setDefaultEncoding(encoding) {
   this._writableState.defaultEncoding = encoding;
   return this;
 };
-
 Object.defineProperty(Writable.prototype, 'writableBuffer', {
   // making it explicit this property is not enumerable
   // because otherwise some prototype manipulation in
@@ -33334,15 +35449,12 @@ Object.defineProperty(Writable.prototype, 'writableBuffer', {
     return this._writableState && this._writableState.getBuffer();
   }
 });
-
 function decodeChunk(state, chunk, encoding) {
   if (!state.objectMode && state.decodeStrings !== false && typeof chunk === 'string') {
     chunk = Buffer.from(chunk, encoding);
   }
-
   return chunk;
 }
-
 Object.defineProperty(Writable.prototype, 'writableHighWaterMark', {
   // making it explicit this property is not enumerable
   // because otherwise some prototype manipulation in
@@ -33351,27 +35463,25 @@ Object.defineProperty(Writable.prototype, 'writableHighWaterMark', {
   get: function get() {
     return this._writableState.highWaterMark;
   }
-}); // if we're already writing something, then just put this
+});
+
+// if we're already writing something, then just put this
 // in the queue, and wait our turn.  Otherwise, call _write
 // If we return false, then we need a drain event, so set that flag.
-
 function writeOrBuffer(stream, state, isBuf, chunk, encoding, cb) {
   if (!isBuf) {
     var newChunk = decodeChunk(state, chunk, encoding);
-
     if (chunk !== newChunk) {
       isBuf = true;
       encoding = 'buffer';
       chunk = newChunk;
     }
   }
-
   var len = state.objectMode ? 1 : chunk.length;
   state.length += len;
-  var ret = state.length < state.highWaterMark; // we must ensure that previous needDrain will not be reset to false.
-
+  var ret = state.length < state.highWaterMark;
+  // we must ensure that previous needDrain will not be reset to false.
   if (!ret) state.needDrain = true;
-
   if (state.writing || state.corked) {
     var last = state.lastBufferedRequest;
     state.lastBufferedRequest = {
@@ -33381,21 +35491,17 @@ function writeOrBuffer(stream, state, isBuf, chunk, encoding, cb) {
       callback: cb,
       next: null
     };
-
     if (last) {
       last.next = state.lastBufferedRequest;
     } else {
       state.bufferedRequest = state.lastBufferedRequest;
     }
-
     state.bufferedRequestCount += 1;
   } else {
     doWrite(stream, state, false, len, chunk, encoding, cb);
   }
-
   return ret;
 }
-
 function doWrite(stream, state, writev, len, chunk, encoding, cb) {
   state.writelen = len;
   state.writecb = cb;
@@ -33404,16 +35510,14 @@ function doWrite(stream, state, writev, len, chunk, encoding, cb) {
   if (state.destroyed) state.onwrite(new ERR_STREAM_DESTROYED('write'));else if (writev) stream._writev(chunk, state.onwrite);else stream._write(chunk, encoding, state.onwrite);
   state.sync = false;
 }
-
 function onwriteError(stream, state, sync, er, cb) {
   --state.pendingcb;
-
   if (sync) {
     // defer the callback if we are being called synchronously
     // to avoid piling up things on the stack
-    process.nextTick(cb, er); // this can emit finish, and it will always happen
+    process.nextTick(cb, er);
+    // this can emit finish, and it will always happen
     // after error
-
     process.nextTick(finishMaybe, stream, state);
     stream._writableState.errorEmitted = true;
     errorOrDestroy(stream, er);
@@ -33422,20 +35526,18 @@ function onwriteError(stream, state, sync, er, cb) {
     // it is async
     cb(er);
     stream._writableState.errorEmitted = true;
-    errorOrDestroy(stream, er); // this can emit finish, but finish must
+    errorOrDestroy(stream, er);
+    // this can emit finish, but finish must
     // always follow error
-
     finishMaybe(stream, state);
   }
 }
-
 function onwriteStateUpdate(state) {
   state.writing = false;
   state.writecb = null;
   state.length -= state.writelen;
   state.writelen = 0;
 }
-
 function onwrite(stream, er) {
   var state = stream._writableState;
   var sync = state.sync;
@@ -33445,11 +35547,9 @@ function onwrite(stream, er) {
   if (er) onwriteError(stream, state, sync, er, cb);else {
     // Check if we're actually ready to finish, but don't emit yet
     var finished = needFinish(state) || stream.destroyed;
-
     if (!finished && !state.corked && !state.bufferProcessing && state.bufferedRequest) {
       clearBuffer(stream, state);
     }
-
     if (sync) {
       process.nextTick(afterWrite, stream, state, finished, cb);
     } else {
@@ -33457,29 +35557,27 @@ function onwrite(stream, er) {
     }
   }
 }
-
 function afterWrite(stream, state, finished, cb) {
   if (!finished) onwriteDrain(stream, state);
   state.pendingcb--;
   cb();
   finishMaybe(stream, state);
-} // Must force callback to be called on nextTick, so that we don't
+}
+
+// Must force callback to be called on nextTick, so that we don't
 // emit 'drain' before the write() consumer gets the 'false' return
 // value, and has a chance to attach a 'drain' listener.
-
-
 function onwriteDrain(stream, state) {
   if (state.length === 0 && state.needDrain) {
     state.needDrain = false;
     stream.emit('drain');
   }
-} // if there's something in the buffer waiting, then process it
+}
 
-
+// if there's something in the buffer waiting, then process it
 function clearBuffer(stream, state) {
   state.bufferProcessing = true;
   var entry = state.bufferedRequest;
-
   if (stream._writev && entry && entry.next) {
     // Fast case, write everything using _writev()
     var l = state.bufferedRequestCount;
@@ -33488,28 +35586,25 @@ function clearBuffer(stream, state) {
     holder.entry = entry;
     var count = 0;
     var allBuffers = true;
-
     while (entry) {
       buffer[count] = entry;
       if (!entry.isBuf) allBuffers = false;
       entry = entry.next;
       count += 1;
     }
-
     buffer.allBuffers = allBuffers;
-    doWrite(stream, state, true, state.length, buffer, '', holder.finish); // doWrite is almost always async, defer these to save a bit of time
-    // as the hot path ends with doWrite
+    doWrite(stream, state, true, state.length, buffer, '', holder.finish);
 
+    // doWrite is almost always async, defer these to save a bit of time
+    // as the hot path ends with doWrite
     state.pendingcb++;
     state.lastBufferedRequest = null;
-
     if (holder.next) {
       state.corkedRequestsFree = holder.next;
       holder.next = null;
     } else {
       state.corkedRequestsFree = new CorkedRequest(state);
     }
-
     state.bufferedRequestCount = 0;
   } else {
     // Slow case, write chunks one-by-one
@@ -33520,32 +35615,26 @@ function clearBuffer(stream, state) {
       var len = state.objectMode ? 1 : chunk.length;
       doWrite(stream, state, false, len, chunk, encoding, cb);
       entry = entry.next;
-      state.bufferedRequestCount--; // if we didn't call the onwrite immediately, then
+      state.bufferedRequestCount--;
+      // if we didn't call the onwrite immediately, then
       // it means that we need to wait until it does.
       // also, that means that the chunk and cb are currently
       // being processed, so move the buffer counter past them.
-
       if (state.writing) {
         break;
       }
     }
-
     if (entry === null) state.lastBufferedRequest = null;
   }
-
   state.bufferedRequest = entry;
   state.bufferProcessing = false;
 }
-
 Writable.prototype._write = function (chunk, encoding, cb) {
   cb(new ERR_METHOD_NOT_IMPLEMENTED('_write()'));
 };
-
 Writable.prototype._writev = null;
-
 Writable.prototype.end = function (chunk, encoding, cb) {
   var state = this._writableState;
-
   if (typeof chunk === 'function') {
     cb = chunk;
     chunk = null;
@@ -33554,19 +35643,18 @@ Writable.prototype.end = function (chunk, encoding, cb) {
     cb = encoding;
     encoding = null;
   }
+  if (chunk !== null && chunk !== undefined) this.write(chunk, encoding);
 
-  if (chunk !== null && chunk !== undefined) this.write(chunk, encoding); // .end() fully uncorks
-
+  // .end() fully uncorks
   if (state.corked) {
     state.corked = 1;
     this.uncork();
-  } // ignore unnecessary end() calls.
+  }
 
-
+  // ignore unnecessary end() calls.
   if (!state.ending) endWritable(this, state, cb);
   return this;
 };
-
 Object.defineProperty(Writable.prototype, 'writableLength', {
   // making it explicit this property is not enumerable
   // because otherwise some prototype manipulation in
@@ -33576,25 +35664,20 @@ Object.defineProperty(Writable.prototype, 'writableLength', {
     return this._writableState.length;
   }
 });
-
 function needFinish(state) {
   return state.ending && state.length === 0 && state.bufferedRequest === null && !state.finished && !state.writing;
 }
-
 function callFinal(stream, state) {
   stream._final(function (err) {
     state.pendingcb--;
-
     if (err) {
       errorOrDestroy(stream, err);
     }
-
     state.prefinished = true;
     stream.emit('prefinish');
     finishMaybe(stream, state);
   });
 }
-
 function prefinish(stream, state) {
   if (!state.prefinished && !state.finalCalled) {
     if (typeof stream._final === 'function' && !state.destroyed) {
@@ -33607,59 +35690,47 @@ function prefinish(stream, state) {
     }
   }
 }
-
 function finishMaybe(stream, state) {
   var need = needFinish(state);
-
   if (need) {
     prefinish(stream, state);
-
     if (state.pendingcb === 0) {
       state.finished = true;
       stream.emit('finish');
-
       if (state.autoDestroy) {
         // In case of duplex streams we need a way to detect
         // if the readable side is ready for autoDestroy as well
         var rState = stream._readableState;
-
         if (!rState || rState.autoDestroy && rState.endEmitted) {
           stream.destroy();
         }
       }
     }
   }
-
   return need;
 }
-
 function endWritable(stream, state, cb) {
   state.ending = true;
   finishMaybe(stream, state);
-
   if (cb) {
     if (state.finished) process.nextTick(cb);else stream.once('finish', cb);
   }
-
   state.ended = true;
   stream.writable = false;
 }
-
 function onCorkedFinish(corkReq, state, err) {
   var entry = corkReq.entry;
   corkReq.entry = null;
-
   while (entry) {
     var cb = entry.callback;
     state.pendingcb--;
     cb(err);
     entry = entry.next;
-  } // reuse the free corkReq.
+  }
 
-
+  // reuse the free corkReq.
   state.corkedRequestsFree.next = corkReq;
 }
-
 Object.defineProperty(Writable.prototype, 'destroyed', {
   // making it explicit this property is not enumerable
   // because otherwise some prototype manipulation in
@@ -33669,7 +35740,6 @@ Object.defineProperty(Writable.prototype, 'destroyed', {
     if (this._writableState === undefined) {
       return false;
     }
-
     return this._writableState.destroyed;
   },
   set: function set(value) {
@@ -33677,30 +35747,28 @@ Object.defineProperty(Writable.prototype, 'destroyed', {
     // has not been initialized yet
     if (!this._writableState) {
       return;
-    } // backward compatibility, the user is explicitly
+    }
+
+    // backward compatibility, the user is explicitly
     // managing destroyed
-
-
     this._writableState.destroyed = value;
   }
 });
 Writable.prototype.destroy = destroyImpl.destroy;
 Writable.prototype._undestroy = destroyImpl.undestroy;
-
 Writable.prototype._destroy = function (err, cb) {
   cb(err);
 };
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../errors":95,"./_stream_duplex":96,"./internal/streams/destroy":103,"./internal/streams/state":107,"./internal/streams/stream":108,"_process":91,"buffer":75,"inherits":80,"util-deprecate":111}],101:[function(require,module,exports){
+},{"../errors":101,"./_stream_duplex":102,"./internal/streams/destroy":109,"./internal/streams/state":113,"./internal/streams/stream":114,"_process":97,"buffer":78,"inherits":86,"util-deprecate":116}],107:[function(require,module,exports){
 (function (process){(function (){
 'use strict';
 
 var _Object$setPrototypeO;
-
-function _defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
-
+function _defineProperty(obj, key, value) { key = _toPropertyKey(key); if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
+function _toPropertyKey(arg) { var key = _toPrimitive(arg, "string"); return typeof key === "symbol" ? key : String(key); }
+function _toPrimitive(input, hint) { if (typeof input !== "object" || input === null) return input; var prim = input[Symbol.toPrimitive]; if (prim !== undefined) { var res = prim.call(input, hint || "default"); if (typeof res !== "object") return res; throw new TypeError("@@toPrimitive must return a primitive value."); } return (hint === "string" ? String : Number)(input); }
 var finished = require('./end-of-stream');
-
 var kLastResolve = Symbol('lastResolve');
 var kLastReject = Symbol('lastReject');
 var kError = Symbol('error');
@@ -33708,22 +35776,19 @@ var kEnded = Symbol('ended');
 var kLastPromise = Symbol('lastPromise');
 var kHandlePromise = Symbol('handlePromise');
 var kStream = Symbol('stream');
-
 function createIterResult(value, done) {
   return {
     value: value,
     done: done
   };
 }
-
 function readAndResolve(iter) {
   var resolve = iter[kLastResolve];
-
   if (resolve !== null) {
-    var data = iter[kStream].read(); // we defer if data is null
+    var data = iter[kStream].read();
+    // we defer if data is null
     // we can be expecting either 'end' or
     // 'error'
-
     if (data !== null) {
       iter[kLastPromise] = null;
       iter[kLastResolve] = null;
@@ -33732,13 +35797,11 @@ function readAndResolve(iter) {
     }
   }
 }
-
 function onReadable(iter) {
   // we wait for the next tick, because it might
   // emit an error with process.nextTick
   process.nextTick(readAndResolve, iter);
 }
-
 function wrapForNext(lastPromise, iter) {
   return function (resolve, reject) {
     lastPromise.then(function () {
@@ -33746,33 +35809,26 @@ function wrapForNext(lastPromise, iter) {
         resolve(createIterResult(undefined, true));
         return;
       }
-
       iter[kHandlePromise](resolve, reject);
     }, reject);
   };
 }
-
 var AsyncIteratorPrototype = Object.getPrototypeOf(function () {});
 var ReadableStreamAsyncIteratorPrototype = Object.setPrototypeOf((_Object$setPrototypeO = {
   get stream() {
     return this[kStream];
   },
-
   next: function next() {
     var _this = this;
-
     // if we have detected an error in the meanwhile
     // reject straight away
     var error = this[kError];
-
     if (error !== null) {
       return Promise.reject(error);
     }
-
     if (this[kEnded]) {
       return Promise.resolve(createIterResult(undefined, true));
     }
-
     if (this[kStream].destroyed) {
       // We need to defer via nextTick because if .destroy(err) is
       // called, the error will be emitted via nextTick, and
@@ -33787,29 +35843,25 @@ var ReadableStreamAsyncIteratorPrototype = Object.setPrototypeOf((_Object$setPro
           }
         });
       });
-    } // if we have multiple next() calls
+    }
+
+    // if we have multiple next() calls
     // we will wait for the previous Promise to finish
     // this logic is optimized to support for await loops,
     // where next() is only called once at a time
-
-
     var lastPromise = this[kLastPromise];
     var promise;
-
     if (lastPromise) {
       promise = new Promise(wrapForNext(lastPromise, this));
     } else {
       // fast path needed to support multiple this.push()
       // without triggering the next() queue
       var data = this[kStream].read();
-
       if (data !== null) {
         return Promise.resolve(createIterResult(data, false));
       }
-
       promise = new Promise(this[kHandlePromise]);
     }
-
     this[kLastPromise] = promise;
     return promise;
   }
@@ -33817,7 +35869,6 @@ var ReadableStreamAsyncIteratorPrototype = Object.setPrototypeOf((_Object$setPro
   return this;
 }), _defineProperty(_Object$setPrototypeO, "return", function _return() {
   var _this2 = this;
-
   // destroy(err, cb) is a private API
   // we can guarantee we have that here, because we control the
   // Readable class this is attached to
@@ -33827,15 +35878,12 @@ var ReadableStreamAsyncIteratorPrototype = Object.setPrototypeOf((_Object$setPro
         reject(err);
         return;
       }
-
       resolve(createIterResult(undefined, true));
     });
   });
 }), _Object$setPrototypeO), AsyncIteratorPrototype);
-
 var createReadableStreamAsyncIterator = function createReadableStreamAsyncIterator(stream) {
   var _Object$create;
-
   var iterator = Object.create(ReadableStreamAsyncIteratorPrototype, (_Object$create = {}, _defineProperty(_Object$create, kStream, {
     value: stream,
     writable: true
@@ -33854,7 +35902,6 @@ var createReadableStreamAsyncIterator = function createReadableStreamAsyncIterat
   }), _defineProperty(_Object$create, kHandlePromise, {
     value: function value(resolve, reject) {
       var data = iterator[kStream].read();
-
       if (data) {
         iterator[kLastPromise] = null;
         iterator[kLastResolve] = null;
@@ -33870,75 +35917,58 @@ var createReadableStreamAsyncIterator = function createReadableStreamAsyncIterat
   iterator[kLastPromise] = null;
   finished(stream, function (err) {
     if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
-      var reject = iterator[kLastReject]; // reject if we are waiting for data in the Promise
+      var reject = iterator[kLastReject];
+      // reject if we are waiting for data in the Promise
       // returned by next() and store the error
-
       if (reject !== null) {
         iterator[kLastPromise] = null;
         iterator[kLastResolve] = null;
         iterator[kLastReject] = null;
         reject(err);
       }
-
       iterator[kError] = err;
       return;
     }
-
     var resolve = iterator[kLastResolve];
-
     if (resolve !== null) {
       iterator[kLastPromise] = null;
       iterator[kLastResolve] = null;
       iterator[kLastReject] = null;
       resolve(createIterResult(undefined, true));
     }
-
     iterator[kEnded] = true;
   });
   stream.on('readable', onReadable.bind(null, iterator));
   return iterator;
 };
-
 module.exports = createReadableStreamAsyncIterator;
 }).call(this)}).call(this,require('_process'))
-},{"./end-of-stream":104,"_process":91}],102:[function(require,module,exports){
+},{"./end-of-stream":110,"_process":97}],108:[function(require,module,exports){
 'use strict';
 
-function ownKeys(object, enumerableOnly) { var keys = Object.keys(object); if (Object.getOwnPropertySymbols) { var symbols = Object.getOwnPropertySymbols(object); if (enumerableOnly) symbols = symbols.filter(function (sym) { return Object.getOwnPropertyDescriptor(object, sym).enumerable; }); keys.push.apply(keys, symbols); } return keys; }
-
-function _objectSpread(target) { for (var i = 1; i < arguments.length; i++) { var source = arguments[i] != null ? arguments[i] : {}; if (i % 2) { ownKeys(Object(source), true).forEach(function (key) { _defineProperty(target, key, source[key]); }); } else if (Object.getOwnPropertyDescriptors) { Object.defineProperties(target, Object.getOwnPropertyDescriptors(source)); } else { ownKeys(Object(source)).forEach(function (key) { Object.defineProperty(target, key, Object.getOwnPropertyDescriptor(source, key)); }); } } return target; }
-
-function _defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
-
+function ownKeys(object, enumerableOnly) { var keys = Object.keys(object); if (Object.getOwnPropertySymbols) { var symbols = Object.getOwnPropertySymbols(object); enumerableOnly && (symbols = symbols.filter(function (sym) { return Object.getOwnPropertyDescriptor(object, sym).enumerable; })), keys.push.apply(keys, symbols); } return keys; }
+function _objectSpread(target) { for (var i = 1; i < arguments.length; i++) { var source = null != arguments[i] ? arguments[i] : {}; i % 2 ? ownKeys(Object(source), !0).forEach(function (key) { _defineProperty(target, key, source[key]); }) : Object.getOwnPropertyDescriptors ? Object.defineProperties(target, Object.getOwnPropertyDescriptors(source)) : ownKeys(Object(source)).forEach(function (key) { Object.defineProperty(target, key, Object.getOwnPropertyDescriptor(source, key)); }); } return target; }
+function _defineProperty(obj, key, value) { key = _toPropertyKey(key); if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
-
-function _defineProperties(target, props) { for (var i = 0; i < props.length; i++) { var descriptor = props[i]; descriptor.enumerable = descriptor.enumerable || false; descriptor.configurable = true; if ("value" in descriptor) descriptor.writable = true; Object.defineProperty(target, descriptor.key, descriptor); } }
-
-function _createClass(Constructor, protoProps, staticProps) { if (protoProps) _defineProperties(Constructor.prototype, protoProps); if (staticProps) _defineProperties(Constructor, staticProps); return Constructor; }
-
+function _defineProperties(target, props) { for (var i = 0; i < props.length; i++) { var descriptor = props[i]; descriptor.enumerable = descriptor.enumerable || false; descriptor.configurable = true; if ("value" in descriptor) descriptor.writable = true; Object.defineProperty(target, _toPropertyKey(descriptor.key), descriptor); } }
+function _createClass(Constructor, protoProps, staticProps) { if (protoProps) _defineProperties(Constructor.prototype, protoProps); if (staticProps) _defineProperties(Constructor, staticProps); Object.defineProperty(Constructor, "prototype", { writable: false }); return Constructor; }
+function _toPropertyKey(arg) { var key = _toPrimitive(arg, "string"); return typeof key === "symbol" ? key : String(key); }
+function _toPrimitive(input, hint) { if (typeof input !== "object" || input === null) return input; var prim = input[Symbol.toPrimitive]; if (prim !== undefined) { var res = prim.call(input, hint || "default"); if (typeof res !== "object") return res; throw new TypeError("@@toPrimitive must return a primitive value."); } return (hint === "string" ? String : Number)(input); }
 var _require = require('buffer'),
-    Buffer = _require.Buffer;
-
+  Buffer = _require.Buffer;
 var _require2 = require('util'),
-    inspect = _require2.inspect;
-
+  inspect = _require2.inspect;
 var custom = inspect && inspect.custom || 'inspect';
-
 function copyBuffer(src, target, offset) {
   Buffer.prototype.copy.call(src, target, offset);
 }
-
-module.exports =
-/*#__PURE__*/
-function () {
+module.exports = /*#__PURE__*/function () {
   function BufferList() {
     _classCallCheck(this, BufferList);
-
     this.head = null;
     this.tail = null;
     this.length = 0;
   }
-
   _createClass(BufferList, [{
     key: "push",
     value: function push(v) {
@@ -33982,11 +36012,7 @@ function () {
       if (this.length === 0) return '';
       var p = this.head;
       var ret = '' + p.data;
-
-      while (p = p.next) {
-        ret += s + p.data;
-      }
-
+      while (p = p.next) ret += s + p.data;
       return ret;
     }
   }, {
@@ -33996,21 +36022,19 @@ function () {
       var ret = Buffer.allocUnsafe(n >>> 0);
       var p = this.head;
       var i = 0;
-
       while (p) {
         copyBuffer(p.data, ret, i);
         i += p.data.length;
         p = p.next;
       }
-
       return ret;
-    } // Consumes a specified amount of bytes or characters from the buffered data.
+    }
 
+    // Consumes a specified amount of bytes or characters from the buffered data.
   }, {
     key: "consume",
     value: function consume(n, hasStrings) {
       var ret;
-
       if (n < this.head.data.length) {
         // `slice` is the same for buffers and strings.
         ret = this.head.data.slice(0, n);
@@ -34022,15 +36046,15 @@ function () {
         // Result spans more than one buffer.
         ret = hasStrings ? this._getString(n) : this._getBuffer(n);
       }
-
       return ret;
     }
   }, {
     key: "first",
     value: function first() {
       return this.head.data;
-    } // Consumes a specified amount of characters from the buffered data.
+    }
 
+    // Consumes a specified amount of characters from the buffered data.
   }, {
     key: "_getString",
     value: function _getString(n) {
@@ -34038,13 +36062,11 @@ function () {
       var c = 1;
       var ret = p.data;
       n -= ret.length;
-
       while (p = p.next) {
         var str = p.data;
         var nb = n > str.length ? str.length : n;
         if (nb === str.length) ret += str;else ret += str.slice(0, n);
         n -= nb;
-
         if (n === 0) {
           if (nb === str.length) {
             ++c;
@@ -34053,17 +36075,15 @@ function () {
             this.head = p;
             p.data = str.slice(nb);
           }
-
           break;
         }
-
         ++c;
       }
-
       this.length -= c;
       return ret;
-    } // Consumes a specified amount of bytes from the buffered data.
+    }
 
+    // Consumes a specified amount of bytes from the buffered data.
   }, {
     key: "_getBuffer",
     value: function _getBuffer(n) {
@@ -34072,13 +36092,11 @@ function () {
       var c = 1;
       p.data.copy(ret);
       n -= p.data.length;
-
       while (p = p.next) {
         var buf = p.data;
         var nb = n > buf.length ? buf.length : n;
         buf.copy(ret, ret.length - n, 0, nb);
         n -= nb;
-
         if (n === 0) {
           if (nb === buf.length) {
             ++c;
@@ -34087,21 +36105,19 @@ function () {
             this.head = p;
             p.data = buf.slice(nb);
           }
-
           break;
         }
-
         ++c;
       }
-
       this.length -= c;
       return ret;
-    } // Make sure the linked list only shows the minimal necessary information.
+    }
 
+    // Make sure the linked list only shows the minimal necessary information.
   }, {
     key: custom,
     value: function value(_, options) {
-      return inspect(this, _objectSpread({}, options, {
+      return inspect(this, _objectSpread(_objectSpread({}, options), {}, {
         // Only inspect one level.
         depth: 0,
         // It should not recurse.
@@ -34109,19 +36125,17 @@ function () {
       }));
     }
   }]);
-
   return BufferList;
 }();
-},{"buffer":75,"util":74}],103:[function(require,module,exports){
+},{"buffer":78,"util":77}],109:[function(require,module,exports){
 (function (process){(function (){
-'use strict'; // undocumented cb() API, needed for core, not for public API
+'use strict';
 
+// undocumented cb() API, needed for core, not for public API
 function destroy(err, cb) {
   var _this = this;
-
   var readableDestroyed = this._readableState && this._readableState.destroyed;
   var writableDestroyed = this._writableState && this._writableState.destroyed;
-
   if (readableDestroyed || writableDestroyed) {
     if (cb) {
       cb(err);
@@ -34133,21 +36147,20 @@ function destroy(err, cb) {
         process.nextTick(emitErrorNT, this, err);
       }
     }
-
     return this;
-  } // we set destroyed to true before firing error callbacks in order
-  // to make it re-entrance safe in case destroy() is called within callbacks
+  }
 
+  // we set destroyed to true before firing error callbacks in order
+  // to make it re-entrance safe in case destroy() is called within callbacks
 
   if (this._readableState) {
     this._readableState.destroyed = true;
-  } // if this is a duplex stream mark the writable part as destroyed as well
+  }
 
-
+  // if this is a duplex stream mark the writable part as destroyed as well
   if (this._writableState) {
     this._writableState.destroyed = true;
   }
-
   this._destroy(err || null, function (err) {
     if (!cb && err) {
       if (!_this._writableState) {
@@ -34165,21 +36178,17 @@ function destroy(err, cb) {
       process.nextTick(emitCloseNT, _this);
     }
   });
-
   return this;
 }
-
 function emitErrorAndCloseNT(self, err) {
   emitErrorNT(self, err);
   emitCloseNT(self);
 }
-
 function emitCloseNT(self) {
   if (self._writableState && !self._writableState.emitClose) return;
   if (self._readableState && !self._readableState.emitClose) return;
   self.emit('close');
 }
-
 function undestroy() {
   if (this._readableState) {
     this._readableState.destroyed = false;
@@ -34187,7 +36196,6 @@ function undestroy() {
     this._readableState.ended = false;
     this._readableState.endEmitted = false;
   }
-
   if (this._writableState) {
     this._writableState.destroyed = false;
     this._writableState.ended = false;
@@ -34198,104 +36206,86 @@ function undestroy() {
     this._writableState.errorEmitted = false;
   }
 }
-
 function emitErrorNT(self, err) {
   self.emit('error', err);
 }
-
 function errorOrDestroy(stream, err) {
   // We have tests that rely on errors being emitted
   // in the same tick, so changing this is semver major.
   // For now when you opt-in to autoDestroy we allow
   // the error to be emitted nextTick. In a future
   // semver major update we should change the default to this.
+
   var rState = stream._readableState;
   var wState = stream._writableState;
   if (rState && rState.autoDestroy || wState && wState.autoDestroy) stream.destroy(err);else stream.emit('error', err);
 }
-
 module.exports = {
   destroy: destroy,
   undestroy: undestroy,
   errorOrDestroy: errorOrDestroy
 };
 }).call(this)}).call(this,require('_process'))
-},{"_process":91}],104:[function(require,module,exports){
+},{"_process":97}],110:[function(require,module,exports){
 // Ported from https://github.com/mafintosh/end-of-stream with
 // permission from the author, Mathias Buus (@mafintosh).
+
 'use strict';
 
 var ERR_STREAM_PREMATURE_CLOSE = require('../../../errors').codes.ERR_STREAM_PREMATURE_CLOSE;
-
 function once(callback) {
   var called = false;
   return function () {
     if (called) return;
     called = true;
-
     for (var _len = arguments.length, args = new Array(_len), _key = 0; _key < _len; _key++) {
       args[_key] = arguments[_key];
     }
-
     callback.apply(this, args);
   };
 }
-
 function noop() {}
-
 function isRequest(stream) {
   return stream.setHeader && typeof stream.abort === 'function';
 }
-
 function eos(stream, opts, callback) {
   if (typeof opts === 'function') return eos(stream, null, opts);
   if (!opts) opts = {};
   callback = once(callback || noop);
   var readable = opts.readable || opts.readable !== false && stream.readable;
   var writable = opts.writable || opts.writable !== false && stream.writable;
-
   var onlegacyfinish = function onlegacyfinish() {
     if (!stream.writable) onfinish();
   };
-
   var writableEnded = stream._writableState && stream._writableState.finished;
-
   var onfinish = function onfinish() {
     writable = false;
     writableEnded = true;
     if (!readable) callback.call(stream);
   };
-
   var readableEnded = stream._readableState && stream._readableState.endEmitted;
-
   var onend = function onend() {
     readable = false;
     readableEnded = true;
     if (!writable) callback.call(stream);
   };
-
   var onerror = function onerror(err) {
     callback.call(stream, err);
   };
-
   var onclose = function onclose() {
     var err;
-
     if (readable && !readableEnded) {
       if (!stream._readableState || !stream._readableState.ended) err = new ERR_STREAM_PREMATURE_CLOSE();
       return callback.call(stream, err);
     }
-
     if (writable && !writableEnded) {
       if (!stream._writableState || !stream._writableState.ended) err = new ERR_STREAM_PREMATURE_CLOSE();
       return callback.call(stream, err);
     }
   };
-
   var onrequest = function onrequest() {
     stream.req.on('finish', onfinish);
   };
-
   if (isRequest(stream)) {
     stream.on('complete', onfinish);
     stream.on('abort', onclose);
@@ -34305,7 +36295,6 @@ function eos(stream, opts, callback) {
     stream.on('end', onlegacyfinish);
     stream.on('close', onlegacyfinish);
   }
-
   stream.on('end', onend);
   stream.on('finish', onfinish);
   if (opts.error !== false) stream.on('error', onerror);
@@ -34323,20 +36312,19 @@ function eos(stream, opts, callback) {
     stream.removeListener('close', onclose);
   };
 }
-
 module.exports = eos;
-},{"../../../errors":95}],105:[function(require,module,exports){
+},{"../../../errors":101}],111:[function(require,module,exports){
 module.exports = function () {
   throw new Error('Readable.from is not available in the browser')
 };
 
-},{}],106:[function(require,module,exports){
+},{}],112:[function(require,module,exports){
 // Ported from https://github.com/mafintosh/pump with
 // permission from the author, Mathias Buus (@mafintosh).
+
 'use strict';
 
 var eos;
-
 function once(callback) {
   var called = false;
   return function () {
@@ -34345,20 +36333,16 @@ function once(callback) {
     callback.apply(void 0, arguments);
   };
 }
-
 var _require$codes = require('../../../errors').codes,
-    ERR_MISSING_ARGS = _require$codes.ERR_MISSING_ARGS,
-    ERR_STREAM_DESTROYED = _require$codes.ERR_STREAM_DESTROYED;
-
+  ERR_MISSING_ARGS = _require$codes.ERR_MISSING_ARGS,
+  ERR_STREAM_DESTROYED = _require$codes.ERR_STREAM_DESTROYED;
 function noop(err) {
   // Rethrow the error if it exists to avoid swallowing it
   if (err) throw err;
 }
-
 function isRequest(stream) {
   return stream.setHeader && typeof stream.abort === 'function';
 }
-
 function destroyer(stream, reading, writing, callback) {
   callback = once(callback);
   var closed = false;
@@ -34378,40 +36362,34 @@ function destroyer(stream, reading, writing, callback) {
   return function (err) {
     if (closed) return;
     if (destroyed) return;
-    destroyed = true; // request.destroy just do .end - .abort is what we want
+    destroyed = true;
 
+    // request.destroy just do .end - .abort is what we want
     if (isRequest(stream)) return stream.abort();
     if (typeof stream.destroy === 'function') return stream.destroy();
     callback(err || new ERR_STREAM_DESTROYED('pipe'));
   };
 }
-
 function call(fn) {
   fn();
 }
-
 function pipe(from, to) {
   return from.pipe(to);
 }
-
 function popCallback(streams) {
   if (!streams.length) return noop;
   if (typeof streams[streams.length - 1] !== 'function') return noop;
   return streams.pop();
 }
-
 function pipeline() {
   for (var _len = arguments.length, streams = new Array(_len), _key = 0; _key < _len; _key++) {
     streams[_key] = arguments[_key];
   }
-
   var callback = popCallback(streams);
   if (Array.isArray(streams[0])) streams = streams[0];
-
   if (streams.length < 2) {
     throw new ERR_MISSING_ARGS('streams');
   }
-
   var error;
   var destroys = streams.map(function (stream, i) {
     var reading = i < streams.length - 1;
@@ -34426,40 +36404,34 @@ function pipeline() {
   });
   return streams.reduce(pipe);
 }
-
 module.exports = pipeline;
-},{"../../../errors":95,"./end-of-stream":104}],107:[function(require,module,exports){
+},{"../../../errors":101,"./end-of-stream":110}],113:[function(require,module,exports){
 'use strict';
 
 var ERR_INVALID_OPT_VALUE = require('../../../errors').codes.ERR_INVALID_OPT_VALUE;
-
 function highWaterMarkFrom(options, isDuplex, duplexKey) {
   return options.highWaterMark != null ? options.highWaterMark : isDuplex ? options[duplexKey] : null;
 }
-
 function getHighWaterMark(state, options, duplexKey, isDuplex) {
   var hwm = highWaterMarkFrom(options, isDuplex, duplexKey);
-
   if (hwm != null) {
     if (!(isFinite(hwm) && Math.floor(hwm) === hwm) || hwm < 0) {
       var name = isDuplex ? duplexKey : 'highWaterMark';
       throw new ERR_INVALID_OPT_VALUE(name, hwm);
     }
-
     return Math.floor(hwm);
-  } // Default value
+  }
 
-
+  // Default value
   return state.objectMode ? 16 : 16 * 1024;
 }
-
 module.exports = {
   getHighWaterMark: getHighWaterMark
 };
-},{"../../../errors":95}],108:[function(require,module,exports){
+},{"../../../errors":101}],114:[function(require,module,exports){
 module.exports = require('events').EventEmitter;
 
-},{"events":77}],109:[function(require,module,exports){
+},{"events":80}],115:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -34756,1452 +36728,7 @@ function simpleWrite(buf) {
 function simpleEnd(buf) {
   return buf && buf.length ? this.write(buf) : '';
 }
-},{"safe-buffer":92}],110:[function(require,module,exports){
-/** @license URI.js v4.4.1 (c) 2011 Gary Court. License: http://github.com/garycourt/uri-js */
-(function (global, factory) {
-	typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports) :
-	typeof define === 'function' && define.amd ? define(['exports'], factory) :
-	(factory((global.URI = global.URI || {})));
-}(this, (function (exports) { 'use strict';
-
-function merge() {
-    for (var _len = arguments.length, sets = Array(_len), _key = 0; _key < _len; _key++) {
-        sets[_key] = arguments[_key];
-    }
-
-    if (sets.length > 1) {
-        sets[0] = sets[0].slice(0, -1);
-        var xl = sets.length - 1;
-        for (var x = 1; x < xl; ++x) {
-            sets[x] = sets[x].slice(1, -1);
-        }
-        sets[xl] = sets[xl].slice(1);
-        return sets.join('');
-    } else {
-        return sets[0];
-    }
-}
-function subexp(str) {
-    return "(?:" + str + ")";
-}
-function typeOf(o) {
-    return o === undefined ? "undefined" : o === null ? "null" : Object.prototype.toString.call(o).split(" ").pop().split("]").shift().toLowerCase();
-}
-function toUpperCase(str) {
-    return str.toUpperCase();
-}
-function toArray(obj) {
-    return obj !== undefined && obj !== null ? obj instanceof Array ? obj : typeof obj.length !== "number" || obj.split || obj.setInterval || obj.call ? [obj] : Array.prototype.slice.call(obj) : [];
-}
-function assign(target, source) {
-    var obj = target;
-    if (source) {
-        for (var key in source) {
-            obj[key] = source[key];
-        }
-    }
-    return obj;
-}
-
-function buildExps(isIRI) {
-    var ALPHA$$ = "[A-Za-z]",
-        CR$ = "[\\x0D]",
-        DIGIT$$ = "[0-9]",
-        DQUOTE$$ = "[\\x22]",
-        HEXDIG$$ = merge(DIGIT$$, "[A-Fa-f]"),
-        //case-insensitive
-    LF$$ = "[\\x0A]",
-        SP$$ = "[\\x20]",
-        PCT_ENCODED$ = subexp(subexp("%[EFef]" + HEXDIG$$ + "%" + HEXDIG$$ + HEXDIG$$ + "%" + HEXDIG$$ + HEXDIG$$) + "|" + subexp("%[89A-Fa-f]" + HEXDIG$$ + "%" + HEXDIG$$ + HEXDIG$$) + "|" + subexp("%" + HEXDIG$$ + HEXDIG$$)),
-        //expanded
-    GEN_DELIMS$$ = "[\\:\\/\\?\\#\\[\\]\\@]",
-        SUB_DELIMS$$ = "[\\!\\$\\&\\'\\(\\)\\*\\+\\,\\;\\=]",
-        RESERVED$$ = merge(GEN_DELIMS$$, SUB_DELIMS$$),
-        UCSCHAR$$ = isIRI ? "[\\xA0-\\u200D\\u2010-\\u2029\\u202F-\\uD7FF\\uF900-\\uFDCF\\uFDF0-\\uFFEF]" : "[]",
-        //subset, excludes bidi control characters
-    IPRIVATE$$ = isIRI ? "[\\uE000-\\uF8FF]" : "[]",
-        //subset
-    UNRESERVED$$ = merge(ALPHA$$, DIGIT$$, "[\\-\\.\\_\\~]", UCSCHAR$$),
-        SCHEME$ = subexp(ALPHA$$ + merge(ALPHA$$, DIGIT$$, "[\\+\\-\\.]") + "*"),
-        USERINFO$ = subexp(subexp(PCT_ENCODED$ + "|" + merge(UNRESERVED$$, SUB_DELIMS$$, "[\\:]")) + "*"),
-        DEC_OCTET$ = subexp(subexp("25[0-5]") + "|" + subexp("2[0-4]" + DIGIT$$) + "|" + subexp("1" + DIGIT$$ + DIGIT$$) + "|" + subexp("[1-9]" + DIGIT$$) + "|" + DIGIT$$),
-        DEC_OCTET_RELAXED$ = subexp(subexp("25[0-5]") + "|" + subexp("2[0-4]" + DIGIT$$) + "|" + subexp("1" + DIGIT$$ + DIGIT$$) + "|" + subexp("0?[1-9]" + DIGIT$$) + "|0?0?" + DIGIT$$),
-        //relaxed parsing rules
-    IPV4ADDRESS$ = subexp(DEC_OCTET_RELAXED$ + "\\." + DEC_OCTET_RELAXED$ + "\\." + DEC_OCTET_RELAXED$ + "\\." + DEC_OCTET_RELAXED$),
-        H16$ = subexp(HEXDIG$$ + "{1,4}"),
-        LS32$ = subexp(subexp(H16$ + "\\:" + H16$) + "|" + IPV4ADDRESS$),
-        IPV6ADDRESS1$ = subexp(subexp(H16$ + "\\:") + "{6}" + LS32$),
-        //                           6( h16 ":" ) ls32
-    IPV6ADDRESS2$ = subexp("\\:\\:" + subexp(H16$ + "\\:") + "{5}" + LS32$),
-        //                      "::" 5( h16 ":" ) ls32
-    IPV6ADDRESS3$ = subexp(subexp(H16$) + "?\\:\\:" + subexp(H16$ + "\\:") + "{4}" + LS32$),
-        //[               h16 ] "::" 4( h16 ":" ) ls32
-    IPV6ADDRESS4$ = subexp(subexp(subexp(H16$ + "\\:") + "{0,1}" + H16$) + "?\\:\\:" + subexp(H16$ + "\\:") + "{3}" + LS32$),
-        //[ *1( h16 ":" ) h16 ] "::" 3( h16 ":" ) ls32
-    IPV6ADDRESS5$ = subexp(subexp(subexp(H16$ + "\\:") + "{0,2}" + H16$) + "?\\:\\:" + subexp(H16$ + "\\:") + "{2}" + LS32$),
-        //[ *2( h16 ":" ) h16 ] "::" 2( h16 ":" ) ls32
-    IPV6ADDRESS6$ = subexp(subexp(subexp(H16$ + "\\:") + "{0,3}" + H16$) + "?\\:\\:" + H16$ + "\\:" + LS32$),
-        //[ *3( h16 ":" ) h16 ] "::"    h16 ":"   ls32
-    IPV6ADDRESS7$ = subexp(subexp(subexp(H16$ + "\\:") + "{0,4}" + H16$) + "?\\:\\:" + LS32$),
-        //[ *4( h16 ":" ) h16 ] "::"              ls32
-    IPV6ADDRESS8$ = subexp(subexp(subexp(H16$ + "\\:") + "{0,5}" + H16$) + "?\\:\\:" + H16$),
-        //[ *5( h16 ":" ) h16 ] "::"              h16
-    IPV6ADDRESS9$ = subexp(subexp(subexp(H16$ + "\\:") + "{0,6}" + H16$) + "?\\:\\:"),
-        //[ *6( h16 ":" ) h16 ] "::"
-    IPV6ADDRESS$ = subexp([IPV6ADDRESS1$, IPV6ADDRESS2$, IPV6ADDRESS3$, IPV6ADDRESS4$, IPV6ADDRESS5$, IPV6ADDRESS6$, IPV6ADDRESS7$, IPV6ADDRESS8$, IPV6ADDRESS9$].join("|")),
-        ZONEID$ = subexp(subexp(UNRESERVED$$ + "|" + PCT_ENCODED$) + "+"),
-        //RFC 6874
-    IPV6ADDRZ$ = subexp(IPV6ADDRESS$ + "\\%25" + ZONEID$),
-        //RFC 6874
-    IPV6ADDRZ_RELAXED$ = subexp(IPV6ADDRESS$ + subexp("\\%25|\\%(?!" + HEXDIG$$ + "{2})") + ZONEID$),
-        //RFC 6874, with relaxed parsing rules
-    IPVFUTURE$ = subexp("[vV]" + HEXDIG$$ + "+\\." + merge(UNRESERVED$$, SUB_DELIMS$$, "[\\:]") + "+"),
-        IP_LITERAL$ = subexp("\\[" + subexp(IPV6ADDRZ_RELAXED$ + "|" + IPV6ADDRESS$ + "|" + IPVFUTURE$) + "\\]"),
-        //RFC 6874
-    REG_NAME$ = subexp(subexp(PCT_ENCODED$ + "|" + merge(UNRESERVED$$, SUB_DELIMS$$)) + "*"),
-        HOST$ = subexp(IP_LITERAL$ + "|" + IPV4ADDRESS$ + "(?!" + REG_NAME$ + ")" + "|" + REG_NAME$),
-        PORT$ = subexp(DIGIT$$ + "*"),
-        AUTHORITY$ = subexp(subexp(USERINFO$ + "@") + "?" + HOST$ + subexp("\\:" + PORT$) + "?"),
-        PCHAR$ = subexp(PCT_ENCODED$ + "|" + merge(UNRESERVED$$, SUB_DELIMS$$, "[\\:\\@]")),
-        SEGMENT$ = subexp(PCHAR$ + "*"),
-        SEGMENT_NZ$ = subexp(PCHAR$ + "+"),
-        SEGMENT_NZ_NC$ = subexp(subexp(PCT_ENCODED$ + "|" + merge(UNRESERVED$$, SUB_DELIMS$$, "[\\@]")) + "+"),
-        PATH_ABEMPTY$ = subexp(subexp("\\/" + SEGMENT$) + "*"),
-        PATH_ABSOLUTE$ = subexp("\\/" + subexp(SEGMENT_NZ$ + PATH_ABEMPTY$) + "?"),
-        //simplified
-    PATH_NOSCHEME$ = subexp(SEGMENT_NZ_NC$ + PATH_ABEMPTY$),
-        //simplified
-    PATH_ROOTLESS$ = subexp(SEGMENT_NZ$ + PATH_ABEMPTY$),
-        //simplified
-    PATH_EMPTY$ = "(?!" + PCHAR$ + ")",
-        PATH$ = subexp(PATH_ABEMPTY$ + "|" + PATH_ABSOLUTE$ + "|" + PATH_NOSCHEME$ + "|" + PATH_ROOTLESS$ + "|" + PATH_EMPTY$),
-        QUERY$ = subexp(subexp(PCHAR$ + "|" + merge("[\\/\\?]", IPRIVATE$$)) + "*"),
-        FRAGMENT$ = subexp(subexp(PCHAR$ + "|[\\/\\?]") + "*"),
-        HIER_PART$ = subexp(subexp("\\/\\/" + AUTHORITY$ + PATH_ABEMPTY$) + "|" + PATH_ABSOLUTE$ + "|" + PATH_ROOTLESS$ + "|" + PATH_EMPTY$),
-        URI$ = subexp(SCHEME$ + "\\:" + HIER_PART$ + subexp("\\?" + QUERY$) + "?" + subexp("\\#" + FRAGMENT$) + "?"),
-        RELATIVE_PART$ = subexp(subexp("\\/\\/" + AUTHORITY$ + PATH_ABEMPTY$) + "|" + PATH_ABSOLUTE$ + "|" + PATH_NOSCHEME$ + "|" + PATH_EMPTY$),
-        RELATIVE$ = subexp(RELATIVE_PART$ + subexp("\\?" + QUERY$) + "?" + subexp("\\#" + FRAGMENT$) + "?"),
-        URI_REFERENCE$ = subexp(URI$ + "|" + RELATIVE$),
-        ABSOLUTE_URI$ = subexp(SCHEME$ + "\\:" + HIER_PART$ + subexp("\\?" + QUERY$) + "?"),
-        GENERIC_REF$ = "^(" + SCHEME$ + ")\\:" + subexp(subexp("\\/\\/(" + subexp("(" + USERINFO$ + ")@") + "?(" + HOST$ + ")" + subexp("\\:(" + PORT$ + ")") + "?)") + "?(" + PATH_ABEMPTY$ + "|" + PATH_ABSOLUTE$ + "|" + PATH_ROOTLESS$ + "|" + PATH_EMPTY$ + ")") + subexp("\\?(" + QUERY$ + ")") + "?" + subexp("\\#(" + FRAGMENT$ + ")") + "?$",
-        RELATIVE_REF$ = "^(){0}" + subexp(subexp("\\/\\/(" + subexp("(" + USERINFO$ + ")@") + "?(" + HOST$ + ")" + subexp("\\:(" + PORT$ + ")") + "?)") + "?(" + PATH_ABEMPTY$ + "|" + PATH_ABSOLUTE$ + "|" + PATH_NOSCHEME$ + "|" + PATH_EMPTY$ + ")") + subexp("\\?(" + QUERY$ + ")") + "?" + subexp("\\#(" + FRAGMENT$ + ")") + "?$",
-        ABSOLUTE_REF$ = "^(" + SCHEME$ + ")\\:" + subexp(subexp("\\/\\/(" + subexp("(" + USERINFO$ + ")@") + "?(" + HOST$ + ")" + subexp("\\:(" + PORT$ + ")") + "?)") + "?(" + PATH_ABEMPTY$ + "|" + PATH_ABSOLUTE$ + "|" + PATH_ROOTLESS$ + "|" + PATH_EMPTY$ + ")") + subexp("\\?(" + QUERY$ + ")") + "?$",
-        SAMEDOC_REF$ = "^" + subexp("\\#(" + FRAGMENT$ + ")") + "?$",
-        AUTHORITY_REF$ = "^" + subexp("(" + USERINFO$ + ")@") + "?(" + HOST$ + ")" + subexp("\\:(" + PORT$ + ")") + "?$";
-    return {
-        NOT_SCHEME: new RegExp(merge("[^]", ALPHA$$, DIGIT$$, "[\\+\\-\\.]"), "g"),
-        NOT_USERINFO: new RegExp(merge("[^\\%\\:]", UNRESERVED$$, SUB_DELIMS$$), "g"),
-        NOT_HOST: new RegExp(merge("[^\\%\\[\\]\\:]", UNRESERVED$$, SUB_DELIMS$$), "g"),
-        NOT_PATH: new RegExp(merge("[^\\%\\/\\:\\@]", UNRESERVED$$, SUB_DELIMS$$), "g"),
-        NOT_PATH_NOSCHEME: new RegExp(merge("[^\\%\\/\\@]", UNRESERVED$$, SUB_DELIMS$$), "g"),
-        NOT_QUERY: new RegExp(merge("[^\\%]", UNRESERVED$$, SUB_DELIMS$$, "[\\:\\@\\/\\?]", IPRIVATE$$), "g"),
-        NOT_FRAGMENT: new RegExp(merge("[^\\%]", UNRESERVED$$, SUB_DELIMS$$, "[\\:\\@\\/\\?]"), "g"),
-        ESCAPE: new RegExp(merge("[^]", UNRESERVED$$, SUB_DELIMS$$), "g"),
-        UNRESERVED: new RegExp(UNRESERVED$$, "g"),
-        OTHER_CHARS: new RegExp(merge("[^\\%]", UNRESERVED$$, RESERVED$$), "g"),
-        PCT_ENCODED: new RegExp(PCT_ENCODED$, "g"),
-        IPV4ADDRESS: new RegExp("^(" + IPV4ADDRESS$ + ")$"),
-        IPV6ADDRESS: new RegExp("^\\[?(" + IPV6ADDRESS$ + ")" + subexp(subexp("\\%25|\\%(?!" + HEXDIG$$ + "{2})") + "(" + ZONEID$ + ")") + "?\\]?$") //RFC 6874, with relaxed parsing rules
-    };
-}
-var URI_PROTOCOL = buildExps(false);
-
-var IRI_PROTOCOL = buildExps(true);
-
-var slicedToArray = function () {
-  function sliceIterator(arr, i) {
-    var _arr = [];
-    var _n = true;
-    var _d = false;
-    var _e = undefined;
-
-    try {
-      for (var _i = arr[Symbol.iterator](), _s; !(_n = (_s = _i.next()).done); _n = true) {
-        _arr.push(_s.value);
-
-        if (i && _arr.length === i) break;
-      }
-    } catch (err) {
-      _d = true;
-      _e = err;
-    } finally {
-      try {
-        if (!_n && _i["return"]) _i["return"]();
-      } finally {
-        if (_d) throw _e;
-      }
-    }
-
-    return _arr;
-  }
-
-  return function (arr, i) {
-    if (Array.isArray(arr)) {
-      return arr;
-    } else if (Symbol.iterator in Object(arr)) {
-      return sliceIterator(arr, i);
-    } else {
-      throw new TypeError("Invalid attempt to destructure non-iterable instance");
-    }
-  };
-}();
-
-
-
-
-
-
-
-
-
-
-
-
-
-var toConsumableArray = function (arr) {
-  if (Array.isArray(arr)) {
-    for (var i = 0, arr2 = Array(arr.length); i < arr.length; i++) arr2[i] = arr[i];
-
-    return arr2;
-  } else {
-    return Array.from(arr);
-  }
-};
-
-/** Highest positive signed 32-bit float value */
-
-var maxInt = 2147483647; // aka. 0x7FFFFFFF or 2^31-1
-
-/** Bootstring parameters */
-var base = 36;
-var tMin = 1;
-var tMax = 26;
-var skew = 38;
-var damp = 700;
-var initialBias = 72;
-var initialN = 128; // 0x80
-var delimiter = '-'; // '\x2D'
-
-/** Regular expressions */
-var regexPunycode = /^xn--/;
-var regexNonASCII = /[^\0-\x7E]/; // non-ASCII chars
-var regexSeparators = /[\x2E\u3002\uFF0E\uFF61]/g; // RFC 3490 separators
-
-/** Error messages */
-var errors = {
-	'overflow': 'Overflow: input needs wider integers to process',
-	'not-basic': 'Illegal input >= 0x80 (not a basic code point)',
-	'invalid-input': 'Invalid input'
-};
-
-/** Convenience shortcuts */
-var baseMinusTMin = base - tMin;
-var floor = Math.floor;
-var stringFromCharCode = String.fromCharCode;
-
-/*--------------------------------------------------------------------------*/
-
-/**
- * A generic error utility function.
- * @private
- * @param {String} type The error type.
- * @returns {Error} Throws a `RangeError` with the applicable error message.
- */
-function error$1(type) {
-	throw new RangeError(errors[type]);
-}
-
-/**
- * A generic `Array#map` utility function.
- * @private
- * @param {Array} array The array to iterate over.
- * @param {Function} callback The function that gets called for every array
- * item.
- * @returns {Array} A new array of values returned by the callback function.
- */
-function map(array, fn) {
-	var result = [];
-	var length = array.length;
-	while (length--) {
-		result[length] = fn(array[length]);
-	}
-	return result;
-}
-
-/**
- * A simple `Array#map`-like wrapper to work with domain name strings or email
- * addresses.
- * @private
- * @param {String} domain The domain name or email address.
- * @param {Function} callback The function that gets called for every
- * character.
- * @returns {Array} A new string of characters returned by the callback
- * function.
- */
-function mapDomain(string, fn) {
-	var parts = string.split('@');
-	var result = '';
-	if (parts.length > 1) {
-		// In email addresses, only the domain name should be punycoded. Leave
-		// the local part (i.e. everything up to `@`) intact.
-		result = parts[0] + '@';
-		string = parts[1];
-	}
-	// Avoid `split(regex)` for IE8 compatibility. See #17.
-	string = string.replace(regexSeparators, '\x2E');
-	var labels = string.split('.');
-	var encoded = map(labels, fn).join('.');
-	return result + encoded;
-}
-
-/**
- * Creates an array containing the numeric code points of each Unicode
- * character in the string. While JavaScript uses UCS-2 internally,
- * this function will convert a pair of surrogate halves (each of which
- * UCS-2 exposes as separate characters) into a single code point,
- * matching UTF-16.
- * @see `punycode.ucs2.encode`
- * @see <https://mathiasbynens.be/notes/javascript-encoding>
- * @memberOf punycode.ucs2
- * @name decode
- * @param {String} string The Unicode input string (UCS-2).
- * @returns {Array} The new array of code points.
- */
-function ucs2decode(string) {
-	var output = [];
-	var counter = 0;
-	var length = string.length;
-	while (counter < length) {
-		var value = string.charCodeAt(counter++);
-		if (value >= 0xD800 && value <= 0xDBFF && counter < length) {
-			// It's a high surrogate, and there is a next character.
-			var extra = string.charCodeAt(counter++);
-			if ((extra & 0xFC00) == 0xDC00) {
-				// Low surrogate.
-				output.push(((value & 0x3FF) << 10) + (extra & 0x3FF) + 0x10000);
-			} else {
-				// It's an unmatched surrogate; only append this code unit, in case the
-				// next code unit is the high surrogate of a surrogate pair.
-				output.push(value);
-				counter--;
-			}
-		} else {
-			output.push(value);
-		}
-	}
-	return output;
-}
-
-/**
- * Creates a string based on an array of numeric code points.
- * @see `punycode.ucs2.decode`
- * @memberOf punycode.ucs2
- * @name encode
- * @param {Array} codePoints The array of numeric code points.
- * @returns {String} The new Unicode string (UCS-2).
- */
-var ucs2encode = function ucs2encode(array) {
-	return String.fromCodePoint.apply(String, toConsumableArray(array));
-};
-
-/**
- * Converts a basic code point into a digit/integer.
- * @see `digitToBasic()`
- * @private
- * @param {Number} codePoint The basic numeric code point value.
- * @returns {Number} The numeric value of a basic code point (for use in
- * representing integers) in the range `0` to `base - 1`, or `base` if
- * the code point does not represent a value.
- */
-var basicToDigit = function basicToDigit(codePoint) {
-	if (codePoint - 0x30 < 0x0A) {
-		return codePoint - 0x16;
-	}
-	if (codePoint - 0x41 < 0x1A) {
-		return codePoint - 0x41;
-	}
-	if (codePoint - 0x61 < 0x1A) {
-		return codePoint - 0x61;
-	}
-	return base;
-};
-
-/**
- * Converts a digit/integer into a basic code point.
- * @see `basicToDigit()`
- * @private
- * @param {Number} digit The numeric value of a basic code point.
- * @returns {Number} The basic code point whose value (when used for
- * representing integers) is `digit`, which needs to be in the range
- * `0` to `base - 1`. If `flag` is non-zero, the uppercase form is
- * used; else, the lowercase form is used. The behavior is undefined
- * if `flag` is non-zero and `digit` has no uppercase form.
- */
-var digitToBasic = function digitToBasic(digit, flag) {
-	//  0..25 map to ASCII a..z or A..Z
-	// 26..35 map to ASCII 0..9
-	return digit + 22 + 75 * (digit < 26) - ((flag != 0) << 5);
-};
-
-/**
- * Bias adaptation function as per section 3.4 of RFC 3492.
- * https://tools.ietf.org/html/rfc3492#section-3.4
- * @private
- */
-var adapt = function adapt(delta, numPoints, firstTime) {
-	var k = 0;
-	delta = firstTime ? floor(delta / damp) : delta >> 1;
-	delta += floor(delta / numPoints);
-	for (; /* no initialization */delta > baseMinusTMin * tMax >> 1; k += base) {
-		delta = floor(delta / baseMinusTMin);
-	}
-	return floor(k + (baseMinusTMin + 1) * delta / (delta + skew));
-};
-
-/**
- * Converts a Punycode string of ASCII-only symbols to a string of Unicode
- * symbols.
- * @memberOf punycode
- * @param {String} input The Punycode string of ASCII-only symbols.
- * @returns {String} The resulting string of Unicode symbols.
- */
-var decode = function decode(input) {
-	// Don't use UCS-2.
-	var output = [];
-	var inputLength = input.length;
-	var i = 0;
-	var n = initialN;
-	var bias = initialBias;
-
-	// Handle the basic code points: let `basic` be the number of input code
-	// points before the last delimiter, or `0` if there is none, then copy
-	// the first basic code points to the output.
-
-	var basic = input.lastIndexOf(delimiter);
-	if (basic < 0) {
-		basic = 0;
-	}
-
-	for (var j = 0; j < basic; ++j) {
-		// if it's not a basic code point
-		if (input.charCodeAt(j) >= 0x80) {
-			error$1('not-basic');
-		}
-		output.push(input.charCodeAt(j));
-	}
-
-	// Main decoding loop: start just after the last delimiter if any basic code
-	// points were copied; start at the beginning otherwise.
-
-	for (var index = basic > 0 ? basic + 1 : 0; index < inputLength;) /* no final expression */{
-
-		// `index` is the index of the next character to be consumed.
-		// Decode a generalized variable-length integer into `delta`,
-		// which gets added to `i`. The overflow checking is easier
-		// if we increase `i` as we go, then subtract off its starting
-		// value at the end to obtain `delta`.
-		var oldi = i;
-		for (var w = 1, k = base;; /* no condition */k += base) {
-
-			if (index >= inputLength) {
-				error$1('invalid-input');
-			}
-
-			var digit = basicToDigit(input.charCodeAt(index++));
-
-			if (digit >= base || digit > floor((maxInt - i) / w)) {
-				error$1('overflow');
-			}
-
-			i += digit * w;
-			var t = k <= bias ? tMin : k >= bias + tMax ? tMax : k - bias;
-
-			if (digit < t) {
-				break;
-			}
-
-			var baseMinusT = base - t;
-			if (w > floor(maxInt / baseMinusT)) {
-				error$1('overflow');
-			}
-
-			w *= baseMinusT;
-		}
-
-		var out = output.length + 1;
-		bias = adapt(i - oldi, out, oldi == 0);
-
-		// `i` was supposed to wrap around from `out` to `0`,
-		// incrementing `n` each time, so we'll fix that now:
-		if (floor(i / out) > maxInt - n) {
-			error$1('overflow');
-		}
-
-		n += floor(i / out);
-		i %= out;
-
-		// Insert `n` at position `i` of the output.
-		output.splice(i++, 0, n);
-	}
-
-	return String.fromCodePoint.apply(String, output);
-};
-
-/**
- * Converts a string of Unicode symbols (e.g. a domain name label) to a
- * Punycode string of ASCII-only symbols.
- * @memberOf punycode
- * @param {String} input The string of Unicode symbols.
- * @returns {String} The resulting Punycode string of ASCII-only symbols.
- */
-var encode = function encode(input) {
-	var output = [];
-
-	// Convert the input in UCS-2 to an array of Unicode code points.
-	input = ucs2decode(input);
-
-	// Cache the length.
-	var inputLength = input.length;
-
-	// Initialize the state.
-	var n = initialN;
-	var delta = 0;
-	var bias = initialBias;
-
-	// Handle the basic code points.
-	var _iteratorNormalCompletion = true;
-	var _didIteratorError = false;
-	var _iteratorError = undefined;
-
-	try {
-		for (var _iterator = input[Symbol.iterator](), _step; !(_iteratorNormalCompletion = (_step = _iterator.next()).done); _iteratorNormalCompletion = true) {
-			var _currentValue2 = _step.value;
-
-			if (_currentValue2 < 0x80) {
-				output.push(stringFromCharCode(_currentValue2));
-			}
-		}
-	} catch (err) {
-		_didIteratorError = true;
-		_iteratorError = err;
-	} finally {
-		try {
-			if (!_iteratorNormalCompletion && _iterator.return) {
-				_iterator.return();
-			}
-		} finally {
-			if (_didIteratorError) {
-				throw _iteratorError;
-			}
-		}
-	}
-
-	var basicLength = output.length;
-	var handledCPCount = basicLength;
-
-	// `handledCPCount` is the number of code points that have been handled;
-	// `basicLength` is the number of basic code points.
-
-	// Finish the basic string with a delimiter unless it's empty.
-	if (basicLength) {
-		output.push(delimiter);
-	}
-
-	// Main encoding loop:
-	while (handledCPCount < inputLength) {
-
-		// All non-basic code points < n have been handled already. Find the next
-		// larger one:
-		var m = maxInt;
-		var _iteratorNormalCompletion2 = true;
-		var _didIteratorError2 = false;
-		var _iteratorError2 = undefined;
-
-		try {
-			for (var _iterator2 = input[Symbol.iterator](), _step2; !(_iteratorNormalCompletion2 = (_step2 = _iterator2.next()).done); _iteratorNormalCompletion2 = true) {
-				var currentValue = _step2.value;
-
-				if (currentValue >= n && currentValue < m) {
-					m = currentValue;
-				}
-			}
-
-			// Increase `delta` enough to advance the decoder's <n,i> state to <m,0>,
-			// but guard against overflow.
-		} catch (err) {
-			_didIteratorError2 = true;
-			_iteratorError2 = err;
-		} finally {
-			try {
-				if (!_iteratorNormalCompletion2 && _iterator2.return) {
-					_iterator2.return();
-				}
-			} finally {
-				if (_didIteratorError2) {
-					throw _iteratorError2;
-				}
-			}
-		}
-
-		var handledCPCountPlusOne = handledCPCount + 1;
-		if (m - n > floor((maxInt - delta) / handledCPCountPlusOne)) {
-			error$1('overflow');
-		}
-
-		delta += (m - n) * handledCPCountPlusOne;
-		n = m;
-
-		var _iteratorNormalCompletion3 = true;
-		var _didIteratorError3 = false;
-		var _iteratorError3 = undefined;
-
-		try {
-			for (var _iterator3 = input[Symbol.iterator](), _step3; !(_iteratorNormalCompletion3 = (_step3 = _iterator3.next()).done); _iteratorNormalCompletion3 = true) {
-				var _currentValue = _step3.value;
-
-				if (_currentValue < n && ++delta > maxInt) {
-					error$1('overflow');
-				}
-				if (_currentValue == n) {
-					// Represent delta as a generalized variable-length integer.
-					var q = delta;
-					for (var k = base;; /* no condition */k += base) {
-						var t = k <= bias ? tMin : k >= bias + tMax ? tMax : k - bias;
-						if (q < t) {
-							break;
-						}
-						var qMinusT = q - t;
-						var baseMinusT = base - t;
-						output.push(stringFromCharCode(digitToBasic(t + qMinusT % baseMinusT, 0)));
-						q = floor(qMinusT / baseMinusT);
-					}
-
-					output.push(stringFromCharCode(digitToBasic(q, 0)));
-					bias = adapt(delta, handledCPCountPlusOne, handledCPCount == basicLength);
-					delta = 0;
-					++handledCPCount;
-				}
-			}
-		} catch (err) {
-			_didIteratorError3 = true;
-			_iteratorError3 = err;
-		} finally {
-			try {
-				if (!_iteratorNormalCompletion3 && _iterator3.return) {
-					_iterator3.return();
-				}
-			} finally {
-				if (_didIteratorError3) {
-					throw _iteratorError3;
-				}
-			}
-		}
-
-		++delta;
-		++n;
-	}
-	return output.join('');
-};
-
-/**
- * Converts a Punycode string representing a domain name or an email address
- * to Unicode. Only the Punycoded parts of the input will be converted, i.e.
- * it doesn't matter if you call it on a string that has already been
- * converted to Unicode.
- * @memberOf punycode
- * @param {String} input The Punycoded domain name or email address to
- * convert to Unicode.
- * @returns {String} The Unicode representation of the given Punycode
- * string.
- */
-var toUnicode = function toUnicode(input) {
-	return mapDomain(input, function (string) {
-		return regexPunycode.test(string) ? decode(string.slice(4).toLowerCase()) : string;
-	});
-};
-
-/**
- * Converts a Unicode string representing a domain name or an email address to
- * Punycode. Only the non-ASCII parts of the domain name will be converted,
- * i.e. it doesn't matter if you call it with a domain that's already in
- * ASCII.
- * @memberOf punycode
- * @param {String} input The domain name or email address to convert, as a
- * Unicode string.
- * @returns {String} The Punycode representation of the given domain name or
- * email address.
- */
-var toASCII = function toASCII(input) {
-	return mapDomain(input, function (string) {
-		return regexNonASCII.test(string) ? 'xn--' + encode(string) : string;
-	});
-};
-
-/*--------------------------------------------------------------------------*/
-
-/** Define the public API */
-var punycode = {
-	/**
-  * A string representing the current Punycode.js version number.
-  * @memberOf punycode
-  * @type String
-  */
-	'version': '2.1.0',
-	/**
-  * An object of methods to convert from JavaScript's internal character
-  * representation (UCS-2) to Unicode code points, and back.
-  * @see <https://mathiasbynens.be/notes/javascript-encoding>
-  * @memberOf punycode
-  * @type Object
-  */
-	'ucs2': {
-		'decode': ucs2decode,
-		'encode': ucs2encode
-	},
-	'decode': decode,
-	'encode': encode,
-	'toASCII': toASCII,
-	'toUnicode': toUnicode
-};
-
-/**
- * URI.js
- *
- * @fileoverview An RFC 3986 compliant, scheme extendable URI parsing/validating/resolving library for JavaScript.
- * @author <a href="mailto:gary.court@gmail.com">Gary Court</a>
- * @see http://github.com/garycourt/uri-js
- */
-/**
- * Copyright 2011 Gary Court. All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without modification, are
- * permitted provided that the following conditions are met:
- *
- *    1. Redistributions of source code must retain the above copyright notice, this list of
- *       conditions and the following disclaimer.
- *
- *    2. Redistributions in binary form must reproduce the above copyright notice, this list
- *       of conditions and the following disclaimer in the documentation and/or other materials
- *       provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY GARY COURT ``AS IS'' AND ANY EXPRESS OR IMPLIED
- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL GARY COURT OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
- * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
- * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * The views and conclusions contained in the software and documentation are those of the
- * authors and should not be interpreted as representing official policies, either expressed
- * or implied, of Gary Court.
- */
-var SCHEMES = {};
-function pctEncChar(chr) {
-    var c = chr.charCodeAt(0);
-    var e = void 0;
-    if (c < 16) e = "%0" + c.toString(16).toUpperCase();else if (c < 128) e = "%" + c.toString(16).toUpperCase();else if (c < 2048) e = "%" + (c >> 6 | 192).toString(16).toUpperCase() + "%" + (c & 63 | 128).toString(16).toUpperCase();else e = "%" + (c >> 12 | 224).toString(16).toUpperCase() + "%" + (c >> 6 & 63 | 128).toString(16).toUpperCase() + "%" + (c & 63 | 128).toString(16).toUpperCase();
-    return e;
-}
-function pctDecChars(str) {
-    var newStr = "";
-    var i = 0;
-    var il = str.length;
-    while (i < il) {
-        var c = parseInt(str.substr(i + 1, 2), 16);
-        if (c < 128) {
-            newStr += String.fromCharCode(c);
-            i += 3;
-        } else if (c >= 194 && c < 224) {
-            if (il - i >= 6) {
-                var c2 = parseInt(str.substr(i + 4, 2), 16);
-                newStr += String.fromCharCode((c & 31) << 6 | c2 & 63);
-            } else {
-                newStr += str.substr(i, 6);
-            }
-            i += 6;
-        } else if (c >= 224) {
-            if (il - i >= 9) {
-                var _c = parseInt(str.substr(i + 4, 2), 16);
-                var c3 = parseInt(str.substr(i + 7, 2), 16);
-                newStr += String.fromCharCode((c & 15) << 12 | (_c & 63) << 6 | c3 & 63);
-            } else {
-                newStr += str.substr(i, 9);
-            }
-            i += 9;
-        } else {
-            newStr += str.substr(i, 3);
-            i += 3;
-        }
-    }
-    return newStr;
-}
-function _normalizeComponentEncoding(components, protocol) {
-    function decodeUnreserved(str) {
-        var decStr = pctDecChars(str);
-        return !decStr.match(protocol.UNRESERVED) ? str : decStr;
-    }
-    if (components.scheme) components.scheme = String(components.scheme).replace(protocol.PCT_ENCODED, decodeUnreserved).toLowerCase().replace(protocol.NOT_SCHEME, "");
-    if (components.userinfo !== undefined) components.userinfo = String(components.userinfo).replace(protocol.PCT_ENCODED, decodeUnreserved).replace(protocol.NOT_USERINFO, pctEncChar).replace(protocol.PCT_ENCODED, toUpperCase);
-    if (components.host !== undefined) components.host = String(components.host).replace(protocol.PCT_ENCODED, decodeUnreserved).toLowerCase().replace(protocol.NOT_HOST, pctEncChar).replace(protocol.PCT_ENCODED, toUpperCase);
-    if (components.path !== undefined) components.path = String(components.path).replace(protocol.PCT_ENCODED, decodeUnreserved).replace(components.scheme ? protocol.NOT_PATH : protocol.NOT_PATH_NOSCHEME, pctEncChar).replace(protocol.PCT_ENCODED, toUpperCase);
-    if (components.query !== undefined) components.query = String(components.query).replace(protocol.PCT_ENCODED, decodeUnreserved).replace(protocol.NOT_QUERY, pctEncChar).replace(protocol.PCT_ENCODED, toUpperCase);
-    if (components.fragment !== undefined) components.fragment = String(components.fragment).replace(protocol.PCT_ENCODED, decodeUnreserved).replace(protocol.NOT_FRAGMENT, pctEncChar).replace(protocol.PCT_ENCODED, toUpperCase);
-    return components;
-}
-
-function _stripLeadingZeros(str) {
-    return str.replace(/^0*(.*)/, "$1") || "0";
-}
-function _normalizeIPv4(host, protocol) {
-    var matches = host.match(protocol.IPV4ADDRESS) || [];
-
-    var _matches = slicedToArray(matches, 2),
-        address = _matches[1];
-
-    if (address) {
-        return address.split(".").map(_stripLeadingZeros).join(".");
-    } else {
-        return host;
-    }
-}
-function _normalizeIPv6(host, protocol) {
-    var matches = host.match(protocol.IPV6ADDRESS) || [];
-
-    var _matches2 = slicedToArray(matches, 3),
-        address = _matches2[1],
-        zone = _matches2[2];
-
-    if (address) {
-        var _address$toLowerCase$ = address.toLowerCase().split('::').reverse(),
-            _address$toLowerCase$2 = slicedToArray(_address$toLowerCase$, 2),
-            last = _address$toLowerCase$2[0],
-            first = _address$toLowerCase$2[1];
-
-        var firstFields = first ? first.split(":").map(_stripLeadingZeros) : [];
-        var lastFields = last.split(":").map(_stripLeadingZeros);
-        var isLastFieldIPv4Address = protocol.IPV4ADDRESS.test(lastFields[lastFields.length - 1]);
-        var fieldCount = isLastFieldIPv4Address ? 7 : 8;
-        var lastFieldsStart = lastFields.length - fieldCount;
-        var fields = Array(fieldCount);
-        for (var x = 0; x < fieldCount; ++x) {
-            fields[x] = firstFields[x] || lastFields[lastFieldsStart + x] || '';
-        }
-        if (isLastFieldIPv4Address) {
-            fields[fieldCount - 1] = _normalizeIPv4(fields[fieldCount - 1], protocol);
-        }
-        var allZeroFields = fields.reduce(function (acc, field, index) {
-            if (!field || field === "0") {
-                var lastLongest = acc[acc.length - 1];
-                if (lastLongest && lastLongest.index + lastLongest.length === index) {
-                    lastLongest.length++;
-                } else {
-                    acc.push({ index: index, length: 1 });
-                }
-            }
-            return acc;
-        }, []);
-        var longestZeroFields = allZeroFields.sort(function (a, b) {
-            return b.length - a.length;
-        })[0];
-        var newHost = void 0;
-        if (longestZeroFields && longestZeroFields.length > 1) {
-            var newFirst = fields.slice(0, longestZeroFields.index);
-            var newLast = fields.slice(longestZeroFields.index + longestZeroFields.length);
-            newHost = newFirst.join(":") + "::" + newLast.join(":");
-        } else {
-            newHost = fields.join(":");
-        }
-        if (zone) {
-            newHost += "%" + zone;
-        }
-        return newHost;
-    } else {
-        return host;
-    }
-}
-var URI_PARSE = /^(?:([^:\/?#]+):)?(?:\/\/((?:([^\/?#@]*)@)?(\[[^\/?#\]]+\]|[^\/?#:]*)(?:\:(\d*))?))?([^?#]*)(?:\?([^#]*))?(?:#((?:.|\n|\r)*))?/i;
-var NO_MATCH_IS_UNDEFINED = "".match(/(){0}/)[1] === undefined;
-function parse(uriString) {
-    var options = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
-
-    var components = {};
-    var protocol = options.iri !== false ? IRI_PROTOCOL : URI_PROTOCOL;
-    if (options.reference === "suffix") uriString = (options.scheme ? options.scheme + ":" : "") + "//" + uriString;
-    var matches = uriString.match(URI_PARSE);
-    if (matches) {
-        if (NO_MATCH_IS_UNDEFINED) {
-            //store each component
-            components.scheme = matches[1];
-            components.userinfo = matches[3];
-            components.host = matches[4];
-            components.port = parseInt(matches[5], 10);
-            components.path = matches[6] || "";
-            components.query = matches[7];
-            components.fragment = matches[8];
-            //fix port number
-            if (isNaN(components.port)) {
-                components.port = matches[5];
-            }
-        } else {
-            //IE FIX for improper RegExp matching
-            //store each component
-            components.scheme = matches[1] || undefined;
-            components.userinfo = uriString.indexOf("@") !== -1 ? matches[3] : undefined;
-            components.host = uriString.indexOf("//") !== -1 ? matches[4] : undefined;
-            components.port = parseInt(matches[5], 10);
-            components.path = matches[6] || "";
-            components.query = uriString.indexOf("?") !== -1 ? matches[7] : undefined;
-            components.fragment = uriString.indexOf("#") !== -1 ? matches[8] : undefined;
-            //fix port number
-            if (isNaN(components.port)) {
-                components.port = uriString.match(/\/\/(?:.|\n)*\:(?:\/|\?|\#|$)/) ? matches[4] : undefined;
-            }
-        }
-        if (components.host) {
-            //normalize IP hosts
-            components.host = _normalizeIPv6(_normalizeIPv4(components.host, protocol), protocol);
-        }
-        //determine reference type
-        if (components.scheme === undefined && components.userinfo === undefined && components.host === undefined && components.port === undefined && !components.path && components.query === undefined) {
-            components.reference = "same-document";
-        } else if (components.scheme === undefined) {
-            components.reference = "relative";
-        } else if (components.fragment === undefined) {
-            components.reference = "absolute";
-        } else {
-            components.reference = "uri";
-        }
-        //check for reference errors
-        if (options.reference && options.reference !== "suffix" && options.reference !== components.reference) {
-            components.error = components.error || "URI is not a " + options.reference + " reference.";
-        }
-        //find scheme handler
-        var schemeHandler = SCHEMES[(options.scheme || components.scheme || "").toLowerCase()];
-        //check if scheme can't handle IRIs
-        if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport)) {
-            //if host component is a domain name
-            if (components.host && (options.domainHost || schemeHandler && schemeHandler.domainHost)) {
-                //convert Unicode IDN -> ASCII IDN
-                try {
-                    components.host = punycode.toASCII(components.host.replace(protocol.PCT_ENCODED, pctDecChars).toLowerCase());
-                } catch (e) {
-                    components.error = components.error || "Host's domain name can not be converted to ASCII via punycode: " + e;
-                }
-            }
-            //convert IRI -> URI
-            _normalizeComponentEncoding(components, URI_PROTOCOL);
-        } else {
-            //normalize encodings
-            _normalizeComponentEncoding(components, protocol);
-        }
-        //perform scheme specific parsing
-        if (schemeHandler && schemeHandler.parse) {
-            schemeHandler.parse(components, options);
-        }
-    } else {
-        components.error = components.error || "URI can not be parsed.";
-    }
-    return components;
-}
-
-function _recomposeAuthority(components, options) {
-    var protocol = options.iri !== false ? IRI_PROTOCOL : URI_PROTOCOL;
-    var uriTokens = [];
-    if (components.userinfo !== undefined) {
-        uriTokens.push(components.userinfo);
-        uriTokens.push("@");
-    }
-    if (components.host !== undefined) {
-        //normalize IP hosts, add brackets and escape zone separator for IPv6
-        uriTokens.push(_normalizeIPv6(_normalizeIPv4(String(components.host), protocol), protocol).replace(protocol.IPV6ADDRESS, function (_, $1, $2) {
-            return "[" + $1 + ($2 ? "%25" + $2 : "") + "]";
-        }));
-    }
-    if (typeof components.port === "number" || typeof components.port === "string") {
-        uriTokens.push(":");
-        uriTokens.push(String(components.port));
-    }
-    return uriTokens.length ? uriTokens.join("") : undefined;
-}
-
-var RDS1 = /^\.\.?\//;
-var RDS2 = /^\/\.(\/|$)/;
-var RDS3 = /^\/\.\.(\/|$)/;
-var RDS5 = /^\/?(?:.|\n)*?(?=\/|$)/;
-function removeDotSegments(input) {
-    var output = [];
-    while (input.length) {
-        if (input.match(RDS1)) {
-            input = input.replace(RDS1, "");
-        } else if (input.match(RDS2)) {
-            input = input.replace(RDS2, "/");
-        } else if (input.match(RDS3)) {
-            input = input.replace(RDS3, "/");
-            output.pop();
-        } else if (input === "." || input === "..") {
-            input = "";
-        } else {
-            var im = input.match(RDS5);
-            if (im) {
-                var s = im[0];
-                input = input.slice(s.length);
-                output.push(s);
-            } else {
-                throw new Error("Unexpected dot segment condition");
-            }
-        }
-    }
-    return output.join("");
-}
-
-function serialize(components) {
-    var options = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
-
-    var protocol = options.iri ? IRI_PROTOCOL : URI_PROTOCOL;
-    var uriTokens = [];
-    //find scheme handler
-    var schemeHandler = SCHEMES[(options.scheme || components.scheme || "").toLowerCase()];
-    //perform scheme specific serialization
-    if (schemeHandler && schemeHandler.serialize) schemeHandler.serialize(components, options);
-    if (components.host) {
-        //if host component is an IPv6 address
-        if (protocol.IPV6ADDRESS.test(components.host)) {}
-        //TODO: normalize IPv6 address as per RFC 5952
-
-        //if host component is a domain name
-        else if (options.domainHost || schemeHandler && schemeHandler.domainHost) {
-                //convert IDN via punycode
-                try {
-                    components.host = !options.iri ? punycode.toASCII(components.host.replace(protocol.PCT_ENCODED, pctDecChars).toLowerCase()) : punycode.toUnicode(components.host);
-                } catch (e) {
-                    components.error = components.error || "Host's domain name can not be converted to " + (!options.iri ? "ASCII" : "Unicode") + " via punycode: " + e;
-                }
-            }
-    }
-    //normalize encoding
-    _normalizeComponentEncoding(components, protocol);
-    if (options.reference !== "suffix" && components.scheme) {
-        uriTokens.push(components.scheme);
-        uriTokens.push(":");
-    }
-    var authority = _recomposeAuthority(components, options);
-    if (authority !== undefined) {
-        if (options.reference !== "suffix") {
-            uriTokens.push("//");
-        }
-        uriTokens.push(authority);
-        if (components.path && components.path.charAt(0) !== "/") {
-            uriTokens.push("/");
-        }
-    }
-    if (components.path !== undefined) {
-        var s = components.path;
-        if (!options.absolutePath && (!schemeHandler || !schemeHandler.absolutePath)) {
-            s = removeDotSegments(s);
-        }
-        if (authority === undefined) {
-            s = s.replace(/^\/\//, "/%2F"); //don't allow the path to start with "//"
-        }
-        uriTokens.push(s);
-    }
-    if (components.query !== undefined) {
-        uriTokens.push("?");
-        uriTokens.push(components.query);
-    }
-    if (components.fragment !== undefined) {
-        uriTokens.push("#");
-        uriTokens.push(components.fragment);
-    }
-    return uriTokens.join(""); //merge tokens into a string
-}
-
-function resolveComponents(base, relative) {
-    var options = arguments.length > 2 && arguments[2] !== undefined ? arguments[2] : {};
-    var skipNormalization = arguments[3];
-
-    var target = {};
-    if (!skipNormalization) {
-        base = parse(serialize(base, options), options); //normalize base components
-        relative = parse(serialize(relative, options), options); //normalize relative components
-    }
-    options = options || {};
-    if (!options.tolerant && relative.scheme) {
-        target.scheme = relative.scheme;
-        //target.authority = relative.authority;
-        target.userinfo = relative.userinfo;
-        target.host = relative.host;
-        target.port = relative.port;
-        target.path = removeDotSegments(relative.path || "");
-        target.query = relative.query;
-    } else {
-        if (relative.userinfo !== undefined || relative.host !== undefined || relative.port !== undefined) {
-            //target.authority = relative.authority;
-            target.userinfo = relative.userinfo;
-            target.host = relative.host;
-            target.port = relative.port;
-            target.path = removeDotSegments(relative.path || "");
-            target.query = relative.query;
-        } else {
-            if (!relative.path) {
-                target.path = base.path;
-                if (relative.query !== undefined) {
-                    target.query = relative.query;
-                } else {
-                    target.query = base.query;
-                }
-            } else {
-                if (relative.path.charAt(0) === "/") {
-                    target.path = removeDotSegments(relative.path);
-                } else {
-                    if ((base.userinfo !== undefined || base.host !== undefined || base.port !== undefined) && !base.path) {
-                        target.path = "/" + relative.path;
-                    } else if (!base.path) {
-                        target.path = relative.path;
-                    } else {
-                        target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative.path;
-                    }
-                    target.path = removeDotSegments(target.path);
-                }
-                target.query = relative.query;
-            }
-            //target.authority = base.authority;
-            target.userinfo = base.userinfo;
-            target.host = base.host;
-            target.port = base.port;
-        }
-        target.scheme = base.scheme;
-    }
-    target.fragment = relative.fragment;
-    return target;
-}
-
-function resolve(baseURI, relativeURI, options) {
-    var schemelessOptions = assign({ scheme: 'null' }, options);
-    return serialize(resolveComponents(parse(baseURI, schemelessOptions), parse(relativeURI, schemelessOptions), schemelessOptions, true), schemelessOptions);
-}
-
-function normalize(uri, options) {
-    if (typeof uri === "string") {
-        uri = serialize(parse(uri, options), options);
-    } else if (typeOf(uri) === "object") {
-        uri = parse(serialize(uri, options), options);
-    }
-    return uri;
-}
-
-function equal(uriA, uriB, options) {
-    if (typeof uriA === "string") {
-        uriA = serialize(parse(uriA, options), options);
-    } else if (typeOf(uriA) === "object") {
-        uriA = serialize(uriA, options);
-    }
-    if (typeof uriB === "string") {
-        uriB = serialize(parse(uriB, options), options);
-    } else if (typeOf(uriB) === "object") {
-        uriB = serialize(uriB, options);
-    }
-    return uriA === uriB;
-}
-
-function escapeComponent(str, options) {
-    return str && str.toString().replace(!options || !options.iri ? URI_PROTOCOL.ESCAPE : IRI_PROTOCOL.ESCAPE, pctEncChar);
-}
-
-function unescapeComponent(str, options) {
-    return str && str.toString().replace(!options || !options.iri ? URI_PROTOCOL.PCT_ENCODED : IRI_PROTOCOL.PCT_ENCODED, pctDecChars);
-}
-
-var handler = {
-    scheme: "http",
-    domainHost: true,
-    parse: function parse(components, options) {
-        //report missing host
-        if (!components.host) {
-            components.error = components.error || "HTTP URIs must have a host.";
-        }
-        return components;
-    },
-    serialize: function serialize(components, options) {
-        var secure = String(components.scheme).toLowerCase() === "https";
-        //normalize the default port
-        if (components.port === (secure ? 443 : 80) || components.port === "") {
-            components.port = undefined;
-        }
-        //normalize the empty path
-        if (!components.path) {
-            components.path = "/";
-        }
-        //NOTE: We do not parse query strings for HTTP URIs
-        //as WWW Form Url Encoded query strings are part of the HTML4+ spec,
-        //and not the HTTP spec.
-        return components;
-    }
-};
-
-var handler$1 = {
-    scheme: "https",
-    domainHost: handler.domainHost,
-    parse: handler.parse,
-    serialize: handler.serialize
-};
-
-function isSecure(wsComponents) {
-    return typeof wsComponents.secure === 'boolean' ? wsComponents.secure : String(wsComponents.scheme).toLowerCase() === "wss";
-}
-//RFC 6455
-var handler$2 = {
-    scheme: "ws",
-    domainHost: true,
-    parse: function parse(components, options) {
-        var wsComponents = components;
-        //indicate if the secure flag is set
-        wsComponents.secure = isSecure(wsComponents);
-        //construct resouce name
-        wsComponents.resourceName = (wsComponents.path || '/') + (wsComponents.query ? '?' + wsComponents.query : '');
-        wsComponents.path = undefined;
-        wsComponents.query = undefined;
-        return wsComponents;
-    },
-    serialize: function serialize(wsComponents, options) {
-        //normalize the default port
-        if (wsComponents.port === (isSecure(wsComponents) ? 443 : 80) || wsComponents.port === "") {
-            wsComponents.port = undefined;
-        }
-        //ensure scheme matches secure flag
-        if (typeof wsComponents.secure === 'boolean') {
-            wsComponents.scheme = wsComponents.secure ? 'wss' : 'ws';
-            wsComponents.secure = undefined;
-        }
-        //reconstruct path from resource name
-        if (wsComponents.resourceName) {
-            var _wsComponents$resourc = wsComponents.resourceName.split('?'),
-                _wsComponents$resourc2 = slicedToArray(_wsComponents$resourc, 2),
-                path = _wsComponents$resourc2[0],
-                query = _wsComponents$resourc2[1];
-
-            wsComponents.path = path && path !== '/' ? path : undefined;
-            wsComponents.query = query;
-            wsComponents.resourceName = undefined;
-        }
-        //forbid fragment component
-        wsComponents.fragment = undefined;
-        return wsComponents;
-    }
-};
-
-var handler$3 = {
-    scheme: "wss",
-    domainHost: handler$2.domainHost,
-    parse: handler$2.parse,
-    serialize: handler$2.serialize
-};
-
-var O = {};
-var isIRI = true;
-//RFC 3986
-var UNRESERVED$$ = "[A-Za-z0-9\\-\\.\\_\\~" + (isIRI ? "\\xA0-\\u200D\\u2010-\\u2029\\u202F-\\uD7FF\\uF900-\\uFDCF\\uFDF0-\\uFFEF" : "") + "]";
-var HEXDIG$$ = "[0-9A-Fa-f]"; //case-insensitive
-var PCT_ENCODED$ = subexp(subexp("%[EFef]" + HEXDIG$$ + "%" + HEXDIG$$ + HEXDIG$$ + "%" + HEXDIG$$ + HEXDIG$$) + "|" + subexp("%[89A-Fa-f]" + HEXDIG$$ + "%" + HEXDIG$$ + HEXDIG$$) + "|" + subexp("%" + HEXDIG$$ + HEXDIG$$)); //expanded
-//RFC 5322, except these symbols as per RFC 6068: @ : / ? # [ ] & ; =
-//const ATEXT$$ = "[A-Za-z0-9\\!\\#\\$\\%\\&\\'\\*\\+\\-\\/\\=\\?\\^\\_\\`\\{\\|\\}\\~]";
-//const WSP$$ = "[\\x20\\x09]";
-//const OBS_QTEXT$$ = "[\\x01-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]";  //(%d1-8 / %d11-12 / %d14-31 / %d127)
-//const QTEXT$$ = merge("[\\x21\\x23-\\x5B\\x5D-\\x7E]", OBS_QTEXT$$);  //%d33 / %d35-91 / %d93-126 / obs-qtext
-//const VCHAR$$ = "[\\x21-\\x7E]";
-//const WSP$$ = "[\\x20\\x09]";
-//const OBS_QP$ = subexp("\\\\" + merge("[\\x00\\x0D\\x0A]", OBS_QTEXT$$));  //%d0 / CR / LF / obs-qtext
-//const FWS$ = subexp(subexp(WSP$$ + "*" + "\\x0D\\x0A") + "?" + WSP$$ + "+");
-//const QUOTED_PAIR$ = subexp(subexp("\\\\" + subexp(VCHAR$$ + "|" + WSP$$)) + "|" + OBS_QP$);
-//const QUOTED_STRING$ = subexp('\\"' + subexp(FWS$ + "?" + QCONTENT$) + "*" + FWS$ + "?" + '\\"');
-var ATEXT$$ = "[A-Za-z0-9\\!\\$\\%\\'\\*\\+\\-\\^\\_\\`\\{\\|\\}\\~]";
-var QTEXT$$ = "[\\!\\$\\%\\'\\(\\)\\*\\+\\,\\-\\.0-9\\<\\>A-Z\\x5E-\\x7E]";
-var VCHAR$$ = merge(QTEXT$$, "[\\\"\\\\]");
-var SOME_DELIMS$$ = "[\\!\\$\\'\\(\\)\\*\\+\\,\\;\\:\\@]";
-var UNRESERVED = new RegExp(UNRESERVED$$, "g");
-var PCT_ENCODED = new RegExp(PCT_ENCODED$, "g");
-var NOT_LOCAL_PART = new RegExp(merge("[^]", ATEXT$$, "[\\.]", '[\\"]', VCHAR$$), "g");
-var NOT_HFNAME = new RegExp(merge("[^]", UNRESERVED$$, SOME_DELIMS$$), "g");
-var NOT_HFVALUE = NOT_HFNAME;
-function decodeUnreserved(str) {
-    var decStr = pctDecChars(str);
-    return !decStr.match(UNRESERVED) ? str : decStr;
-}
-var handler$4 = {
-    scheme: "mailto",
-    parse: function parse$$1(components, options) {
-        var mailtoComponents = components;
-        var to = mailtoComponents.to = mailtoComponents.path ? mailtoComponents.path.split(",") : [];
-        mailtoComponents.path = undefined;
-        if (mailtoComponents.query) {
-            var unknownHeaders = false;
-            var headers = {};
-            var hfields = mailtoComponents.query.split("&");
-            for (var x = 0, xl = hfields.length; x < xl; ++x) {
-                var hfield = hfields[x].split("=");
-                switch (hfield[0]) {
-                    case "to":
-                        var toAddrs = hfield[1].split(",");
-                        for (var _x = 0, _xl = toAddrs.length; _x < _xl; ++_x) {
-                            to.push(toAddrs[_x]);
-                        }
-                        break;
-                    case "subject":
-                        mailtoComponents.subject = unescapeComponent(hfield[1], options);
-                        break;
-                    case "body":
-                        mailtoComponents.body = unescapeComponent(hfield[1], options);
-                        break;
-                    default:
-                        unknownHeaders = true;
-                        headers[unescapeComponent(hfield[0], options)] = unescapeComponent(hfield[1], options);
-                        break;
-                }
-            }
-            if (unknownHeaders) mailtoComponents.headers = headers;
-        }
-        mailtoComponents.query = undefined;
-        for (var _x2 = 0, _xl2 = to.length; _x2 < _xl2; ++_x2) {
-            var addr = to[_x2].split("@");
-            addr[0] = unescapeComponent(addr[0]);
-            if (!options.unicodeSupport) {
-                //convert Unicode IDN -> ASCII IDN
-                try {
-                    addr[1] = punycode.toASCII(unescapeComponent(addr[1], options).toLowerCase());
-                } catch (e) {
-                    mailtoComponents.error = mailtoComponents.error || "Email address's domain name can not be converted to ASCII via punycode: " + e;
-                }
-            } else {
-                addr[1] = unescapeComponent(addr[1], options).toLowerCase();
-            }
-            to[_x2] = addr.join("@");
-        }
-        return mailtoComponents;
-    },
-    serialize: function serialize$$1(mailtoComponents, options) {
-        var components = mailtoComponents;
-        var to = toArray(mailtoComponents.to);
-        if (to) {
-            for (var x = 0, xl = to.length; x < xl; ++x) {
-                var toAddr = String(to[x]);
-                var atIdx = toAddr.lastIndexOf("@");
-                var localPart = toAddr.slice(0, atIdx).replace(PCT_ENCODED, decodeUnreserved).replace(PCT_ENCODED, toUpperCase).replace(NOT_LOCAL_PART, pctEncChar);
-                var domain = toAddr.slice(atIdx + 1);
-                //convert IDN via punycode
-                try {
-                    domain = !options.iri ? punycode.toASCII(unescapeComponent(domain, options).toLowerCase()) : punycode.toUnicode(domain);
-                } catch (e) {
-                    components.error = components.error || "Email address's domain name can not be converted to " + (!options.iri ? "ASCII" : "Unicode") + " via punycode: " + e;
-                }
-                to[x] = localPart + "@" + domain;
-            }
-            components.path = to.join(",");
-        }
-        var headers = mailtoComponents.headers = mailtoComponents.headers || {};
-        if (mailtoComponents.subject) headers["subject"] = mailtoComponents.subject;
-        if (mailtoComponents.body) headers["body"] = mailtoComponents.body;
-        var fields = [];
-        for (var name in headers) {
-            if (headers[name] !== O[name]) {
-                fields.push(name.replace(PCT_ENCODED, decodeUnreserved).replace(PCT_ENCODED, toUpperCase).replace(NOT_HFNAME, pctEncChar) + "=" + headers[name].replace(PCT_ENCODED, decodeUnreserved).replace(PCT_ENCODED, toUpperCase).replace(NOT_HFVALUE, pctEncChar));
-            }
-        }
-        if (fields.length) {
-            components.query = fields.join("&");
-        }
-        return components;
-    }
-};
-
-var URN_PARSE = /^([^\:]+)\:(.*)/;
-//RFC 2141
-var handler$5 = {
-    scheme: "urn",
-    parse: function parse$$1(components, options) {
-        var matches = components.path && components.path.match(URN_PARSE);
-        var urnComponents = components;
-        if (matches) {
-            var scheme = options.scheme || urnComponents.scheme || "urn";
-            var nid = matches[1].toLowerCase();
-            var nss = matches[2];
-            var urnScheme = scheme + ":" + (options.nid || nid);
-            var schemeHandler = SCHEMES[urnScheme];
-            urnComponents.nid = nid;
-            urnComponents.nss = nss;
-            urnComponents.path = undefined;
-            if (schemeHandler) {
-                urnComponents = schemeHandler.parse(urnComponents, options);
-            }
-        } else {
-            urnComponents.error = urnComponents.error || "URN can not be parsed.";
-        }
-        return urnComponents;
-    },
-    serialize: function serialize$$1(urnComponents, options) {
-        var scheme = options.scheme || urnComponents.scheme || "urn";
-        var nid = urnComponents.nid;
-        var urnScheme = scheme + ":" + (options.nid || nid);
-        var schemeHandler = SCHEMES[urnScheme];
-        if (schemeHandler) {
-            urnComponents = schemeHandler.serialize(urnComponents, options);
-        }
-        var uriComponents = urnComponents;
-        var nss = urnComponents.nss;
-        uriComponents.path = (nid || options.nid) + ":" + nss;
-        return uriComponents;
-    }
-};
-
-var UUID = /^[0-9A-Fa-f]{8}(?:\-[0-9A-Fa-f]{4}){3}\-[0-9A-Fa-f]{12}$/;
-//RFC 4122
-var handler$6 = {
-    scheme: "urn:uuid",
-    parse: function parse(urnComponents, options) {
-        var uuidComponents = urnComponents;
-        uuidComponents.uuid = uuidComponents.nss;
-        uuidComponents.nss = undefined;
-        if (!options.tolerant && (!uuidComponents.uuid || !uuidComponents.uuid.match(UUID))) {
-            uuidComponents.error = uuidComponents.error || "UUID is not valid.";
-        }
-        return uuidComponents;
-    },
-    serialize: function serialize(uuidComponents, options) {
-        var urnComponents = uuidComponents;
-        //normalize UUID
-        urnComponents.nss = (uuidComponents.uuid || "").toLowerCase();
-        return urnComponents;
-    }
-};
-
-SCHEMES[handler.scheme] = handler;
-SCHEMES[handler$1.scheme] = handler$1;
-SCHEMES[handler$2.scheme] = handler$2;
-SCHEMES[handler$3.scheme] = handler$3;
-SCHEMES[handler$4.scheme] = handler$4;
-SCHEMES[handler$5.scheme] = handler$5;
-SCHEMES[handler$6.scheme] = handler$6;
-
-exports.SCHEMES = SCHEMES;
-exports.pctEncChar = pctEncChar;
-exports.pctDecChars = pctDecChars;
-exports.parse = parse;
-exports.removeDotSegments = removeDotSegments;
-exports.serialize = serialize;
-exports.resolveComponents = resolveComponents;
-exports.resolve = resolve;
-exports.normalize = normalize;
-exports.equal = equal;
-exports.escapeComponent = escapeComponent;
-exports.unescapeComponent = unescapeComponent;
-
-Object.defineProperty(exports, '__esModule', { value: true });
-
-})));
-
-
-},{}],111:[function(require,module,exports){
+},{"safe-buffer":98}],116:[function(require,module,exports){
 (function (global){(function (){
 
 /**
@@ -36272,5 +36799,5 @@ function config (name) {
 }
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}]},{},[9])(9)
+},{}]},{},[11])(11)
 });

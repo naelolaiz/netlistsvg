@@ -397,6 +397,7 @@ export default class Cell {
     public render(cell: ElkModel.Cell): onml.Element {
         const template = this.getTemplate();
         const tempclone = clone(template);
+        let link = this.getCellLink();
         for (const label of cell.labels) {
             const labelIDSplit = label.id.split('.');
             const attrName = labelIDSplit[labelIDSplit.length - 1];
@@ -473,6 +474,10 @@ export default class Cell {
             tempclone[2][2] = this.getTypeLabel();
         } else if (template[1]['s:type'] === 'sub_odd' || template[1]['s:type'] === 'sub_even') {
             const subModule = drawSubModule(cell, this.subModule);
+            if (link === null && this.shouldCreateInternalSubmoduleLink()) {
+                const pageId = FlatModule.addDrilldownPage(cell.id, clone(subModule));
+                link = '#' + pageId;
+            }
             tempclone[3][1].width = subModule[1].width;
             tempclone[3][1].height = subModule[1].height;
             tempclone[2][1].x = tempclone[3][1].width / 2;
@@ -506,7 +511,6 @@ export default class Cell {
             });
         }
         setClass(tempclone, '$cell_id', 'cell_' + this.key);
-        const link = this.getCellLink();
         if (link !== null) {
             makeCellBodyClickable(tempclone);
             return ['a', {'xlink:href': link}, tempclone];
@@ -521,6 +525,11 @@ export default class Cell {
             return config.render.cellLinks[this.key];
         }
         return null;
+    }
+
+    private shouldCreateInternalSubmoduleLink(): boolean {
+        const config = FlatModule.config;
+        return !!(config && config.render && config.render.internalSubmoduleLinks === true);
     }
 
     private getConfiguredCellLabel(): string {

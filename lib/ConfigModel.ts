@@ -12,6 +12,7 @@ interface Render {
     beautifyLabels: boolean;
     cellLabels: StringMap;
     cellLinks: StringMap;
+    internalSubmoduleLinks: boolean;
 }
 
 interface Hierarchy {
@@ -44,6 +45,7 @@ export function normalizeConfig(config?: Config): Config {
             beautifyLabels: true,
             cellLabels: {},
             cellLinks: {},
+            internalSubmoduleLinks: false,
         },
         top: {
             enable: false,
@@ -71,6 +73,8 @@ export function normalizeConfig(config?: Config): Config {
                 config.render.beautifyLabels : defaultConfig.render.beautifyLabels,
             cellLabels: config.render && config.render.cellLabels || defaultConfig.render.cellLabels,
             cellLinks: config.render && config.render.cellLinks || defaultConfig.render.cellLinks,
+            internalSubmoduleLinks: config.render && config.render.internalSubmoduleLinks !== undefined ?
+                config.render.internalSubmoduleLinks : defaultConfig.render.internalSubmoduleLinks,
         },
         top: {
             enable: config.top && config.top.enable || defaultConfig.top.enable,

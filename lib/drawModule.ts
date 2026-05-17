@@ -1,5 +1,5 @@
 import { ElkModel } from './elkGraph';
-import { FlatModule, removeDups } from './FlatModule';
+import { DrilldownPage, FlatModule, removeDups } from './FlatModule';
 import Cell from './Cell';
 import Skin from './Skin';
 
@@ -12,6 +12,31 @@ enum WireDirection {
 }
 
 export default function drawModule(g: ElkModel.Graph, module: FlatModule) {
+    const { elements, svgAttrs } = renderFlatModule(g, module);
+    const hasDrilldownPages = FlatModule.drilldownPages.length > 0;
+    if (FlatModule.config.render &&
+            (!_.isEmpty(FlatModule.config.render.cellLinks) || hasDrilldownPages)) {
+        svgAttrs['xmlns:xlink'] = svgAttrs['xmlns:xlink'] || 'http://www.w3.org/1999/xlink';
+    }
+
+    const styles = getSkinStyles();
+    const ret: onml.Element = hasDrilldownPages ?
+        ['svg', svgAttrs, styles, getDrilldownPageStyles(),
+            ...FlatModule.drilldownPages.map(drilldownPageToSvg),
+            createSvgPage('netlistsvg_page_top', 'netlistsvg-page-default',
+                g.width, g.height, elements)] :
+        ['svg', svgAttrs, styles, ...elements];
+    return onml.s(ret);
+}
+
+export function drawFlatModuleInner(g: ElkModel.Graph, module: FlatModule): onml.Element {
+    const { elements, svgAttrs } = renderFlatModule(g, module);
+    const styles = getSkinStyles();
+    return ['svg', svgAttrs, styles, ...elements];
+}
+
+function renderFlatModule(g: ElkModel.Graph, module: FlatModule):
+        { elements: onml.Element[], svgAttrs: onml.Attributes } {
     const nodes: onml.Element[] = module.nodes.map((n: Cell) => {
         const kchild: ElkModel.Cell = _.find(g.children, (c) => c.id === n.parent + '.' + n.Key);
         return n.render(kchild);
@@ -101,13 +126,13 @@ export default function drawModule(g: ElkModel.Graph, module: FlatModule) {
     if (labels !== undefined && labels.length > 0) {
         lines = lines.concat(labels);
     }
-    const svgAttrs: onml.Attributes = Skin.skin[1];
+    const svgAttrs: onml.Attributes = _.assign({}, Skin.skin[1]);
     svgAttrs.width = g.width.toString();
     svgAttrs.height = g.height.toString();
-    if (FlatModule.config.render && !_.isEmpty(FlatModule.config.render.cellLinks)) {
-        svgAttrs['xmlns:xlink'] = svgAttrs['xmlns:xlink'] || 'http://www.w3.org/1999/xlink';
-    }
+    return { elements: [...nodes, ...lines], svgAttrs };
+}
 
+function getSkinStyles(): onml.Element {
     const styles: onml.Element = ['style', {}, ''];
     onml.t(Skin.skin, {
         enter: (node) => {
@@ -116,9 +141,39 @@ export default function drawModule(g: ElkModel.Graph, module: FlatModule) {
             }
         },
     });
-    const elements: onml.Element[] = [styles, ...nodes, ...lines];
-    const ret: onml.Element = ['svg', svgAttrs, ...elements];
-    return onml.s(ret);
+    return styles;
+}
+
+function getDrilldownPageStyles(): onml.Element {
+    return ['style', {}, [
+        '.netlistsvg-page { display: none; }',
+        '.netlistsvg-page-default { display: inline; }',
+        '.netlistsvg-page:target { display: inline; }',
+        '.netlistsvg-page:target ~ .netlistsvg-page-default { display: none; }',
+    ].join('\n')];
+}
+
+function createSvgPage(
+        id: string,
+        className: string,
+        width: string | number,
+        height: string | number,
+        elements: onml.Element[]): onml.Element {
+    return ['svg', {
+        id,
+        class: className,
+        width: '100%',
+        height: '100%',
+        viewBox: '0 0 ' + width.toString() + ' ' + height.toString(),
+        preserveAspectRatio: 'xMidYMid meet',
+    }, ...elements];
+}
+
+function drilldownPageToSvg(page: DrilldownPage): onml.Element {
+    const attrs = page.svg[1] as onml.Attributes;
+    const width = attrs.width || 1;
+    const height = attrs.height || 1;
+    return createSvgPage(page.id, 'netlistsvg-page', width, height, page.svg.slice(2) as onml.Element[]);
 }
 
 export function drawSubModule(c: ElkModel.Cell, subModule: FlatModule) {
@@ -168,7 +223,7 @@ export function drawSubModule(c: ElkModel.Cell, subModule: FlatModule) {
             return bends.concat(line);
         });
     });
-    const svgAttrs: onml.Attributes = Skin.skin[1];
+    const svgAttrs: onml.Attributes = _.assign({}, Skin.skin[1]);
     svgAttrs.width = c.width.toString();
     svgAttrs.height = c.height.toString();
 

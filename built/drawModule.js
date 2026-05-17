@@ -10,6 +10,7 @@ var __spreadArray = (this && this.__spreadArray) || function (to, from, pack) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.default = drawModule;
+exports.drawFlatModuleInner = drawFlatModuleInner;
 exports.drawSubModule = drawSubModule;
 exports.removeDummyEdges = removeDummyEdges;
 var elkGraph_1 = require("./elkGraph");
@@ -25,6 +26,22 @@ var WireDirection;
     WireDirection[WireDirection["Right"] = 3] = "Right";
 })(WireDirection || (WireDirection = {}));
 function drawModule(g, module) {
+    var _a = renderFlatModule(g, module), elements = _a.elements, svgAttrs = _a.svgAttrs;
+    var hasDrilldownPages = FlatModule_1.FlatModule.drilldownPages.length > 0;
+    if (FlatModule_1.FlatModule.config.render &&
+        (!_.isEmpty(FlatModule_1.FlatModule.config.render.cellLinks) || hasDrilldownPages)) {
+        svgAttrs['xmlns:xlink'] = svgAttrs['xmlns:xlink'] || 'http://www.w3.org/1999/xlink';
+    }
+    var styles = getSkinStyles();
+    var ret = hasDrilldownPages ? __spreadArray(__spreadArray(['svg', svgAttrs, styles, getDrilldownPageStyles()], FlatModule_1.FlatModule.drilldownPages.map(drilldownPageToSvg), true), [createSvgPage('netlistsvg_page_top', 'netlistsvg-page-default', g.width, g.height, elements)], false) : __spreadArray(['svg', svgAttrs, styles], elements, true);
+    return onml.s(ret);
+}
+function drawFlatModuleInner(g, module) {
+    var _a = renderFlatModule(g, module), elements = _a.elements, svgAttrs = _a.svgAttrs;
+    var styles = getSkinStyles();
+    return __spreadArray(['svg', svgAttrs, styles], elements, true);
+}
+function renderFlatModule(g, module) {
     var nodes = module.nodes.map(function (n) {
         var kchild = _.find(g.children, function (c) { return c.id === n.parent + '.' + n.Key; });
         return n.render(kchild);
@@ -116,12 +133,12 @@ function drawModule(g, module) {
     if (labels !== undefined && labels.length > 0) {
         lines = lines.concat(labels);
     }
-    var svgAttrs = Skin_1.default.skin[1];
+    var svgAttrs = _.assign({}, Skin_1.default.skin[1]);
     svgAttrs.width = g.width.toString();
     svgAttrs.height = g.height.toString();
-    if (FlatModule_1.FlatModule.config.render && !_.isEmpty(FlatModule_1.FlatModule.config.render.cellLinks)) {
-        svgAttrs['xmlns:xlink'] = svgAttrs['xmlns:xlink'] || 'http://www.w3.org/1999/xlink';
-    }
+    return { elements: __spreadArray(__spreadArray([], nodes, true), lines, true), svgAttrs: svgAttrs };
+}
+function getSkinStyles() {
     var styles = ['style', {}, ''];
     onml.t(Skin_1.default.skin, {
         enter: function (node) {
@@ -130,9 +147,31 @@ function drawModule(g, module) {
             }
         },
     });
-    var elements = __spreadArray(__spreadArray([styles], nodes, true), lines, true);
-    var ret = __spreadArray(['svg', svgAttrs], elements, true);
-    return onml.s(ret);
+    return styles;
+}
+function getDrilldownPageStyles() {
+    return ['style', {}, [
+            '.netlistsvg-page { display: none; }',
+            '.netlistsvg-page-default { display: inline; }',
+            '.netlistsvg-page:target { display: inline; }',
+            '.netlistsvg-page:target ~ .netlistsvg-page-default { display: none; }',
+        ].join('\n')];
+}
+function createSvgPage(id, className, width, height, elements) {
+    return __spreadArray(['svg', {
+            id: id,
+            class: className,
+            width: '100%',
+            height: '100%',
+            viewBox: '0 0 ' + width.toString() + ' ' + height.toString(),
+            preserveAspectRatio: 'xMidYMid meet',
+        }], elements, true);
+}
+function drilldownPageToSvg(page) {
+    var attrs = page.svg[1];
+    var width = attrs.width || 1;
+    var height = attrs.height || 1;
+    return createSvgPage(page.id, 'netlistsvg-page', width, height, page.svg.slice(2));
 }
 function drawSubModule(c, subModule) {
     var nodes = [];
@@ -182,7 +221,7 @@ function drawSubModule(c, subModule) {
             return bends.concat(line);
         });
     });
-    var svgAttrs = Skin_1.default.skin[1];
+    var svgAttrs = _.assign({}, Skin_1.default.skin[1]);
     svgAttrs.width = c.width.toString();
     svgAttrs.height = c.height.toString();
     var elements = __spreadArray(__spreadArray([], nodes, true), lines, true);

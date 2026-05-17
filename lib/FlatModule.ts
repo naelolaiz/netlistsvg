@@ -3,6 +3,7 @@ import Config, { normalizeConfig } from './ConfigModel';
 import Skin from './Skin';
 import Cell from './Cell';
 import _ = require('lodash');
+import onml = require('onml');
 
 export interface FlatPort {
     key: string;
@@ -24,12 +25,16 @@ export class FlatModule {
     public static layoutProps: {[x: string]: any};
     public static modNames: string[];
     public static config: Config;
+    public static drilldownPages: DrilldownPage[] = [];
+    private static drilldownPageIds: {[x: string]: boolean} = {};
+    private static drilldownPagesByCellId: {[cellId: string]: string} = {};
 
     public static fromNetlist(netlist: Yosys.Netlist, config?: Config): FlatModule {
         this.layoutProps = Skin.getProperties();
         this.modNames = Object.keys(netlist.modules);
         this.netlist = netlist;
         this.config = normalizeConfig(config);
+        this.resetDrilldownPages();
         let topName = null;
         if (this.config.top.enable) {
             topName = this.config.top.module;
@@ -49,6 +54,56 @@ export class FlatModule {
         }
         const top = netlist.modules[topName];
         return new FlatModule(top, topName, 0);
+    }
+
+    public static resetDrilldownPages(): void {
+        this.drilldownPages = [];
+        this.drilldownPageIds = {};
+        this.drilldownPagesByCellId = {};
+    }
+
+    public static addDrilldownPage(rawId: string, svg: onml.Element): string {
+        if (this.drilldownPagesByCellId[rawId]) {
+            return this.drilldownPagesByCellId[rawId];
+        }
+        const base = 'netlistsvg_page_' + rawId.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+        let id = base || 'netlistsvg_page_submodule';
+        let suffix = 2;
+        while (this.drilldownPageIds[id]) {
+            id = base + '_' + suffix;
+            suffix += 1;
+        }
+        this.drilldownPageIds[id] = true;
+        this.drilldownPagesByCellId[rawId] = id;
+        this.drilldownPages.push({id, cellId: rawId, svg});
+        return id;
+    }
+
+    public static setDrilldownPageSvg(cellId: string, svg: onml.Element): void {
+        const pageId = this.drilldownPagesByCellId[cellId];
+        if (!pageId) {
+            return;
+        }
+        for (const page of this.drilldownPages) {
+            if (page.id === pageId) {
+                page.svg = svg;
+                return;
+            }
+        }
+    }
+
+    public static walkSubModuleCells(top: FlatModule): Cell[] {
+        const out: Cell[] = [];
+        const visit = (mod: FlatModule) => {
+            for (const node of mod.nodes) {
+                if (node.subModule) {
+                    out.push(node);
+                    visit(node.subModule);
+                }
+            }
+        };
+        visit(top);
+        return out;
     }
 
     public parent: string;
@@ -177,6 +232,12 @@ export class FlatModule {
         });
         this.wires = wires;
     }
+}
+
+export interface DrilldownPage {
+    id: string;
+    cellId: string;
+    svg: onml.Element;
 }
 
 export interface SigsByConstName {
