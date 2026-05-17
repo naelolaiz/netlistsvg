@@ -158,11 +158,16 @@ function getDrilldownPageStyles() {
         ].join('\n')];
 }
 function createSvgPage(id, className, width, height, elements) {
+    // Each page declares its own native width/height so it renders at
+    // 1:1 inside the outer SVG. Using width/height="100%" would scale
+    // the page up to the outer SVG's dimensions (which equal the
+    // largest page's dimensions, normally the top page), giving small
+    // drilldown pages a ridiculous zoom factor.
     return __spreadArray(['svg', {
             id: id,
             class: className,
-            width: '100%',
-            height: '100%',
+            width: width.toString(),
+            height: height.toString(),
             viewBox: '0 0 ' + width.toString() + ' ' + height.toString(),
             preserveAspectRatio: 'xMidYMid meet',
         }], elements, true);

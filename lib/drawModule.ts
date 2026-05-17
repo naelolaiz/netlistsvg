@@ -159,11 +159,16 @@ function createSvgPage(
         width: string | number,
         height: string | number,
         elements: onml.Element[]): onml.Element {
+    // Each page declares its own native width/height so it renders at
+    // 1:1 inside the outer SVG. Using width/height="100%" would scale
+    // the page up to the outer SVG's dimensions (which equal the
+    // largest page's dimensions, normally the top page), giving small
+    // drilldown pages a ridiculous zoom factor.
     return ['svg', {
         id,
         class: className,
-        width: '100%',
-        height: '100%',
+        width: width.toString(),
+        height: height.toString(),
         viewBox: '0 0 ' + width.toString() + ' ' + height.toString(),
         preserveAspectRatio: 'xMidYMid meet',
     }, ...elements];
