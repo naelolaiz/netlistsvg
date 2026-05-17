@@ -3,6 +3,7 @@ import Yosys from './YosysModel';
 import Skin from './Skin';
 import {Port} from './Port';
 import { drawSubModule } from './drawModule';
+import { beautifyCellTypeLabel } from './labels';
 import _ = require('lodash');
 import { ElkModel, buildElkGraph } from './elkGraph';
 import clone = require('clone');
@@ -469,13 +470,13 @@ export default class Cell {
                 tempclone.push(portClone);
             });
             // first child of generic must be a text node.
-            tempclone[2][2] = this.type;
+            tempclone[2][2] = this.getTypeLabel();
         } else if (template[1]['s:type'] === 'sub_odd' || template[1]['s:type'] === 'sub_even') {
             const subModule = drawSubModule(cell, this.subModule);
             tempclone[3][1].width = subModule[1].width;
             tempclone[3][1].height = subModule[1].height;
             tempclone[2][1].x = tempclone[3][1].width / 2;
-            tempclone[2][2] = this.type;
+            tempclone[2][2] = this.getTypeLabel();
             tempclone.pop();
             tempclone.pop();
             tempclone.pop();
@@ -505,7 +506,52 @@ export default class Cell {
             });
         }
         setClass(tempclone, '$cell_id', 'cell_' + this.key);
+        const link = this.getCellLink();
+        if (link !== null) {
+            makeCellBodyClickable(tempclone);
+            return ['a', {'xlink:href': link}, tempclone];
+        }
         return tempclone;
+    }
+
+    private getCellLink(): string {
+        const config = FlatModule.config;
+        if (config && config.render && config.render.cellLinks &&
+                this.key in config.render.cellLinks) {
+            return config.render.cellLinks[this.key];
+        }
+        return null;
+    }
+
+    private getConfiguredCellLabel(): string {
+        const config = FlatModule.config;
+        if (config && config.render && config.render.cellLabels &&
+                this.key in config.render.cellLabels) {
+            return config.render.cellLabels[this.key];
+        }
+        return null;
+    }
+
+    private getModuleHdlName(): string {
+        const netlist = FlatModule.netlist;
+        if (netlist && netlist.modules && netlist.modules[this.type] &&
+                netlist.modules[this.type].attributes &&
+                typeof netlist.modules[this.type].attributes.hdlname === 'string') {
+            return netlist.modules[this.type].attributes.hdlname;
+        }
+        return null;
+    }
+
+    private getTypeLabel(): string {
+        const configuredLabel = this.getConfiguredCellLabel();
+        if (configuredLabel !== null) {
+            return configuredLabel;
+        }
+        const config = FlatModule.config;
+        if (!config || !config.render || config.render.beautifyLabels) {
+            return beautifyCellTypeLabel(this.type, this.getModuleHdlName());
+        }
+        return this.type;
     }
 
     private addLabels(template, cell: ElkModel.Cell) {
@@ -515,13 +561,16 @@ export default class Cell {
                     const attrName = node.attr['s:attribute'];
                     let newString;
                     if (attrName === 'ref' || attrName === 'id') {
-                        if (this.type === '$_constant_' && this.key.length > 3) {
+                        const configuredLabel = this.getConfiguredCellLabel();
+                        if (configuredLabel !== null) {
+                            newString = configuredLabel;
+                        } else if (this.type === '$_constant_' && this.key.length > 3) {
                             const num: number = parseInt(this.key, 2);
                             newString = '0x' + num.toString(16);
                         } else {
                             newString = this.key;
                         }
-                        this.attributes[attrName] = this.key;
+                        this.attributes[attrName] = newString;
                     } else if (attrName in this.attributes) {
                         newString = this.attributes[attrName];
                     } else {
@@ -562,6 +611,18 @@ function setGenericSize(tempclone, height) {
         enter: (node) => {
             if (node.name === 'rect' && node.attr['s:generic'] === 'body') {
                 node.attr.height = height;
+            }
+        },
+    });
+}
+
+function makeCellBodyClickable(tempclone) {
+    let done = false;
+    onml.traverse(tempclone, {
+        enter: (node) => {
+            if (!done && node.name === 'rect') {
+                node.attr['pointer-events'] = 'all';
+                done = true;
             }
         },
     });

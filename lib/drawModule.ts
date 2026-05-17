@@ -104,6 +104,9 @@ export default function drawModule(g: ElkModel.Graph, module: FlatModule) {
     const svgAttrs: onml.Attributes = Skin.skin[1];
     svgAttrs.width = g.width.toString();
     svgAttrs.height = g.height.toString();
+    if (FlatModule.config.render && !_.isEmpty(FlatModule.config.render.cellLinks)) {
+        svgAttrs['xmlns:xlink'] = svgAttrs['xmlns:xlink'] || 'http://www.w3.org/1999/xlink';
+    }
 
     const styles: onml.Element = ['style', {}, ''];
     onml.t(Skin.skin, {

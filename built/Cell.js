@@ -16,6 +16,7 @@ var YosysModel_1 = require("./YosysModel");
 var Skin_1 = require("./Skin");
 var Port_1 = require("./Port");
 var drawModule_1 = require("./drawModule");
+var labels_1 = require("./labels");
 var _ = require("lodash");
 var elkGraph_1 = require("./elkGraph");
 var clone = require("clone");
@@ -471,14 +472,14 @@ var Cell = /** @class */ (function () {
                 tempclone.push(portClone);
             });
             // first child of generic must be a text node.
-            tempclone[2][2] = this.type;
+            tempclone[2][2] = this.getTypeLabel();
         }
         else if (template[1]['s:type'] === 'sub_odd' || template[1]['s:type'] === 'sub_even') {
             var subModule = (0, drawModule_1.drawSubModule)(cell, this.subModule);
             tempclone[3][1].width = subModule[1].width;
             tempclone[3][1].height = subModule[1].height;
             tempclone[2][1].x = tempclone[3][1].width / 2;
-            tempclone[2][2] = this.type;
+            tempclone[2][2] = this.getTypeLabel();
             tempclone.pop();
             tempclone.pop();
             tempclone.pop();
@@ -508,7 +509,48 @@ var Cell = /** @class */ (function () {
             });
         }
         setClass(tempclone, '$cell_id', 'cell_' + this.key);
+        var link = this.getCellLink();
+        if (link !== null) {
+            makeCellBodyClickable(tempclone);
+            return ['a', { 'xlink:href': link }, tempclone];
+        }
         return tempclone;
+    };
+    Cell.prototype.getCellLink = function () {
+        var config = FlatModule_1.FlatModule.config;
+        if (config && config.render && config.render.cellLinks &&
+            this.key in config.render.cellLinks) {
+            return config.render.cellLinks[this.key];
+        }
+        return null;
+    };
+    Cell.prototype.getConfiguredCellLabel = function () {
+        var config = FlatModule_1.FlatModule.config;
+        if (config && config.render && config.render.cellLabels &&
+            this.key in config.render.cellLabels) {
+            return config.render.cellLabels[this.key];
+        }
+        return null;
+    };
+    Cell.prototype.getModuleHdlName = function () {
+        var netlist = FlatModule_1.FlatModule.netlist;
+        if (netlist && netlist.modules && netlist.modules[this.type] &&
+            netlist.modules[this.type].attributes &&
+            typeof netlist.modules[this.type].attributes.hdlname === 'string') {
+            return netlist.modules[this.type].attributes.hdlname;
+        }
+        return null;
+    };
+    Cell.prototype.getTypeLabel = function () {
+        var configuredLabel = this.getConfiguredCellLabel();
+        if (configuredLabel !== null) {
+            return configuredLabel;
+        }
+        var config = FlatModule_1.FlatModule.config;
+        if (!config || !config.render || config.render.beautifyLabels) {
+            return (0, labels_1.beautifyCellTypeLabel)(this.type, this.getModuleHdlName());
+        }
+        return this.type;
     };
     Cell.prototype.addLabels = function (template, cell) {
         var _this = this;
@@ -518,14 +560,18 @@ var Cell = /** @class */ (function () {
                     var attrName = node.attr['s:attribute'];
                     var newString = void 0;
                     if (attrName === 'ref' || attrName === 'id') {
-                        if (_this.type === '$_constant_' && _this.key.length > 3) {
+                        var configuredLabel = _this.getConfiguredCellLabel();
+                        if (configuredLabel !== null) {
+                            newString = configuredLabel;
+                        }
+                        else if (_this.type === '$_constant_' && _this.key.length > 3) {
                             var num = parseInt(_this.key, 2);
                             newString = '0x' + num.toString(16);
                         }
                         else {
                             newString = _this.key;
                         }
-                        _this.attributes[attrName] = _this.key;
+                        _this.attributes[attrName] = newString;
                     }
                     else if (attrName in _this.attributes) {
                         newString = _this.attributes[attrName];
@@ -567,6 +613,17 @@ function setGenericSize(tempclone, height) {
         enter: function (node) {
             if (node.name === 'rect' && node.attr['s:generic'] === 'body') {
                 node.attr.height = height;
+            }
+        },
+    });
+}
+function makeCellBodyClickable(tempclone) {
+    var done = false;
+    onml.traverse(tempclone, {
+        enter: function (node) {
+            if (!done && node.name === 'rect') {
+                node.attr['pointer-events'] = 'all';
+                done = true;
             }
         },
     });
