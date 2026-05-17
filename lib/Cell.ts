@@ -86,7 +86,8 @@ export default class Cell {
             // and doesn't have an address parameter (not a memory cell)
             if ('WIDTH' in yCell.parameters &&
                 yCell.parameters.WIDTH > 1 &&
-                !('ADDR' in yCell.parameters)) {
+                !('ADDR' in yCell.parameters) &&
+                !yCell.type.endsWith('-bus')) {
                 // turn into a bus version
                 yCell.type = yCell.type + '-bus';
             }
