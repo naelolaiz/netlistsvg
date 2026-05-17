@@ -13,6 +13,7 @@ exports.default = drawModule;
 exports.drawSubModule = drawSubModule;
 exports.removeDummyEdges = removeDummyEdges;
 var elkGraph_1 = require("./elkGraph");
+var FlatModule_1 = require("./FlatModule");
 var Skin_1 = require("./Skin");
 var _ = require("lodash");
 var onml = require("onml");
@@ -118,6 +119,9 @@ function drawModule(g, module) {
     var svgAttrs = Skin_1.default.skin[1];
     svgAttrs.width = g.width.toString();
     svgAttrs.height = g.height.toString();
+    if (FlatModule_1.FlatModule.config.render && !_.isEmpty(FlatModule_1.FlatModule.config.render.cellLinks)) {
+        svgAttrs['xmlns:xlink'] = svgAttrs['xmlns:xlink'] || 'http://www.w3.org/1999/xlink';
+    }
     var styles = ['style', {}, ''];
     onml.t(Skin_1.default.skin, {
         enter: function (node) {

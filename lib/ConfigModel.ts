@@ -1,6 +1,17 @@
+export interface StringMap {
+    [key: string]: string;
+}
+
 interface Config {
     hierarchy: Hierarchy;
+    render: Render;
     top: Top;
+}
+
+interface Render {
+    beautifyLabels: boolean;
+    cellLabels: StringMap;
+    cellLinks: StringMap;
 }
 
 interface Hierarchy {
@@ -29,6 +40,11 @@ export function normalizeConfig(config?: Config): Config {
                 ids: [],
             },
         },
+        render: {
+            beautifyLabels: true,
+            cellLabels: {},
+            cellLinks: {},
+        },
         top: {
             enable: false,
             module: '',
@@ -49,6 +65,12 @@ export function normalizeConfig(config?: Config): Config {
                 ids: config.hierarchy && config.hierarchy.expandModules &&
                     config.hierarchy.expandModules.ids || defaultConfig.hierarchy.expandModules.ids,
             },
+        },
+        render: {
+            beautifyLabels: config.render && config.render.beautifyLabels !== undefined ?
+                config.render.beautifyLabels : defaultConfig.render.beautifyLabels,
+            cellLabels: config.render && config.render.cellLabels || defaultConfig.render.cellLabels,
+            cellLinks: config.render && config.render.cellLinks || defaultConfig.render.cellLinks,
         },
         top: {
             enable: config.top && config.top.enable || defaultConfig.top.enable,

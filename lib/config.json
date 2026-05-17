@@ -7,6 +7,11 @@
       "ids": []
     }
   },
+  "render": {
+    "beautifyLabels": true,
+    "cellLabels": {},
+    "cellLinks": {}
+  },
   "top": {
     "enable": false,
     "module": ""
